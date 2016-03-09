@@ -1,4 +1,14 @@
- 
-test
 
-test 3
+Reddit is a social news and link aggregrator website, launched in (who cares, really?). As of begining of 2016, it has a few billion of monthly page views.
+It is built mainly in Python, with a PostgreSQL database, and several side technologies added over time as the website needed to scale.
+
+Main technological components (by subjective order of importance)
+- Python (with too many libraries to name, although a noteworthy one would be pylons [web framework])
+(of course Python itself brings a ton of [hopefully seperate] components)
+- PostgreSQL (backend database)
+- HAProxy (essentially a HTTP load balancer)
+- Cassandra (for some fancy caching)
+- Memcached (for caching [duh], and ad-hoc locking/synchronization between architectural components)
+- RabbitMQ (fancy implementation of AMQP, used to store jobs for offline processing)
+
+Reddit is primarily deployed on AWS, along with S3 storage for static objects.
