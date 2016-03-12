@@ -1,5 +1,6 @@
+# Reddit - A Brief Overview
 
-Reddit is a social news and link aggregrator website, launched in (who cares, really?). As of begining of 2016, it has a few billion of monthly page views.
+Reddit is a social news and link aggregrator website, launched in 23 of June in the year of 2005. As of begining of 2016, it has a few billion of monthly page views.
 It is built mainly in Python, with a PostgreSQL database, and several side technologies added over time as the website needed to scale.
 
 Main technological components (by subjective order of importance)
