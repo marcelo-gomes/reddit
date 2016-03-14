@@ -35,5 +35,4 @@ Trustworthy
 
 Safety
 
-* instances are located in a Virtual Private Cloud (VPC) with some IP range specified by the user. For additional insulation, you can provide your EC2 resources dedicated hosts or as dedicated instances. .
-  
+* instances are located in a Virtual Private Cloud (VPC) with some IP range specified by the user. For additional insulation, you can provide your EC2 resources dedicated hosts or as dedicated instances.
