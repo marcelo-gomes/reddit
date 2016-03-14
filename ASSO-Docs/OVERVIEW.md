@@ -13,3 +13,26 @@ Main technological components (by subjective order of importance)
 * RabbitMQ (fancy implementation of AMQP, used to store jobs for offline processing)
 
 Reddit is primarily deployed on AWS, along with S3 storage for static objects.
+
+Amazon Elastic Compute Cloud (Amazon EC2) is a web service[AWS] that provides resizable compute capacity in the cloud. It was designed to facilitate cloud computing on the web scale for developers. The service interface simple Amazon EC2 Web allows to obtain and configure capacity with minimal friction. 
+Why AWS?
+Scale computing elastic web
+
+- increase or decrease capacity within minutes. It is possible to commission a hundreds or thousands of server instances simultaneously. Everything is controlled with the Web services APIs, the application can automatically expand or collapse, depending needs.
+
+Completely controlled
+
+- can stop one instance while maintaining the data on boot partition and then restart the same instance. Instances can be reset remotely using web service APIs.
+Can use with other Amazon Web services
+
+- works in conjunction with Amazon Simple Storage Service (Amazon S3), Amazon Relational Database Service (Amazon RDS), 
+Amazon SimpleDB and Amazon Simple Queue Service (Amazon SQS) to provide a complete solution for computing, processing consultation and storage of a wide variety of applications.
+
+Trustworthy
+
+- amazon EC2 offers a highly reliable environment where replacement instances can be rapidly and previously ordered. The service runs within the data center and the proven network infrastructure from Amazon. 
+
+Safety
+
+-instances are located in a Virtual Private Cloud (VPC) with some IP range specified by the user. For additional insulation, you can provide your EC2 resources dedicated hosts or as dedicated instances. .
+  
