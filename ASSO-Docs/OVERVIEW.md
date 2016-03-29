@@ -3,11 +3,12 @@
 Group Elements
 ==================
 
+ - José Soares
  - Pedro Cabral
- - Ricardo Leite
  - Marcelo Gomes
- - José Soares (?)
  - Maria Costa
+ - Ricardo Leite
+
 
 
 
@@ -26,7 +27,7 @@ Its main technological components, by subjective order of importance, include:
 
  - Python: With too many libraries to name, it brings a ton of components. A noteworthy library would be Pylons.
 
- -  Pylons:
+ -  Pylons: Open source project that improves web frameworks, it's written in python. Originally the project was a single web framework.
 
  -  PostgreSQL: Primary backend database. It is used for storing data on Accounts, Subreddits, Links, Comments, Votes, etc. 
 PostgreSQL is an advanced object-relational database management system that supports an extended subset of the SQL standard, including transactions, foreign keys, subqueries, triggers, user-defined types and functions. It has native programming interfaces for C/C++, Java, .Net, Perl, Python, Ruby, Tcl, ODBC, among others.
@@ -50,10 +51,10 @@ It was designed to facilitate cloud computing on the web scale for developers. T
 
 ###*Why AWS?*
 
- - **It has a Scale computing elastic web:** (?)
+ - **It has a Scale computing elastic web:** 
 	 * It can increase or decrease capacity within minutes. It is possible to commission hundreds or thousands of server instances simultaneously. Everything is controlled with the Web services APIs, the application can automatically expand or collapse, depending on the needs.
 
- - **It is completely controlled:** (?)
+ - **It is completely controlled:**
 	* It can stop one instance, while maintaining the data on boot partition, and then restart the same instance. Instances can be reset remotely, using web service APIs.
 
  - **It can be used with other Amazon Web services:**
