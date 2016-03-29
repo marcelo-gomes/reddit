@@ -4,9 +4,9 @@ Group Elements
 ==================
 
  - José Soares
- - Pedro Cabral
  - Marcelo Gomes
  - Maria Costa
+ - Pedro Cabral
  - Ricardo Leite
 
 
