@@ -42,6 +42,24 @@ PostgreSQL is an advanced object-relational database management system that supp
 
 ----------
 
+Funtional requirements:
+
+- Mission - Offer a social news and link aggregator website where users can post links from the Internet, as well as  their original content. 
+- Features - ____
+- System components - ____
+- Operational environment - The reddit server runs on a Ubuntu 14.0.4 system and needs python, mysql, _______ installed to run
+
+Non functional requirements:
+
+- Performance - Need to ensure a fast response so the  browsing is fluid even with big throughput or data volumes.
+- Avaliability - The Downtime of the website must be minimized, having the service running as long as possible, keeping it avaliable to the user.
+- Scalability - Need to ensure that even with an overload of the website service will continue to run ensuring acceptable QoS.
+- Authentication/Security - Must allow the identification of users who try to access his account , while protecting the system from possible invaders.
+- Usability - QoS affects the user's interaction with the website and his satisfaction with it , and the QoS will have to ensure that the user wants to re-use it so usability must be a point to take in count.
+
+
+----------
+
 
 Reddit is primarily deployed on AWS, along with S3 storage for static objects.
 
