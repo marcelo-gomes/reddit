@@ -3,11 +3,12 @@
 Group Elements
 ==================
 
+ - José Soares
+ - Marcelo Gomes
+ - Maria Costa
  - Pedro Cabral
  - Ricardo Leite
- - Marcelo Gomes
- - José Soares (?)
- - Maria Costa
+
 
 
 
