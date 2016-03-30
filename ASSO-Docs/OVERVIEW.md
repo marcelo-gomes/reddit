@@ -21,7 +21,11 @@ The backend is mostly built in Python, with a PostgreSQL database, and several s
 
 
 ----------
+####**System requirements:**
+ The system requires a server-grade machine running a linux distributuion (of the users choise) and amd64.
 
+
+----------
 Its main technological components, by subjective order of importance, include:
 
  - Python: With a ton of extra libraries. A noteworthy library would be Pylons.
@@ -42,16 +46,15 @@ PostgreSQL is an advanced object-relational database management system that supp
 
 ----------
 
-Funtional requirements:
+####**Functional requirements:**
 
-- Mission - Offer a social news and link aggregator website where users can post links from the Internet, as well as  their original content. 
-- Features - ____
-- System components - ____
-- Operational environment - The reddit server runs on a Ubuntu 14.0.4 system and needs python, mysql, _______ installed to run
+Reddit has to be able to serve a social news and link aggregator website, where users can submit content, and comment on other user's content.
+Users are able to 'upvote' and 'downvote' submissions and user comments, and user comments for a given submission are presented in a orderable tree-style. Submissions belong to a given area, called 'subreddit'. Users can subscribe to subreddits.
+Reddit presents a 'front page' for a given user depending of their subreddit subscriptions, and whether they are a (registered) user at all. This page has recent submissions ordered according to score.
 
-Non functional requirements:
+####**Non functional requirements:**
 
-- Performance - Need to ensure a fast response so the  browsing is fluid even with big throughput or data volumes.
+- Response Time - Need to ensure a fast response so the  browsing is fluid even with big throughput or data volumes.
 - Avaliability - The Downtime of the website must be minimized, having the service running as long as possible, keeping it avaliable to the user.
 - Scalability - Need to ensure that even with an overload of the website service will continue to run ensuring acceptable QoS.
 - Authentication/Security - Must allow the identification of users who try to access his account , while protecting the system from possible invaders.
