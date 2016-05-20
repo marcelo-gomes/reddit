@@ -14,12 +14,14 @@ Group Elements
 Table of Contents
 ==================
 1. *[A Brief Overview](#a-brief-overview)
-2. *[4+1 Architectural Views](4+1-architectural-views)
-   	 a. *[Logical View](logical-view)
-	 b. *[Process View](process-view)
-	 c. *[Development view](development-view)
-	 d. *[Physical view](physical-view)
-	 e. *[Scenarios](scenarios)
+2. *[4+1 Architectural Views](#4+1-architectural-views)
+   	 a. *[Logical View](#logical-view)
+	 b. *[Process View](#process-view)
+	 c. *[Development view](#development-view)
+	 d. *[Physical view](#physical-view)
+	 e. *[Scenarios](#scenarios)
+
+
 #**A Brief Overview**
 ===================
 
