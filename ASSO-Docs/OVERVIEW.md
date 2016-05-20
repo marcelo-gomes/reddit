@@ -10,9 +10,12 @@ Group Elements
  - Ricardo Leite
 
 
+Table of Contents
+==================
+1. [A Brief Overview](#A Brief Overview)
 
 
-**A Brief Overview**
+#**A Brief Overview**
 ===================
 
 [Reddit](https://reddit.com) is a social news and link aggregrator website where users, or ***Redditors***, post links from the Internet, as well as  their original content. 
