@@ -13,9 +13,13 @@ Group Elements
 
 Table of Contents
 ==================
-1. [A Brief Overview](#A Brief Overview)
-
-
+1. *[A Brief Overview](#a-brief-overview)
+2. *[4+1 Architectural Views](4+1-architectural-views)
+   	 a. *[Logical View](logical-view)
+	 b. *[Process View](process-view)
+	 c. *[Development view](development-view)
+	 d. *[Physical view](physical-view)
+	 e. *[Scenarios](scenarios)
 #**A Brief Overview**
 ===================
 
@@ -88,3 +92,30 @@ Amazon SimpleDB and Amazon Simple Queue Service (Amazon SQS), to provide a compl
  - **It is reliable:**
 	* Amazon EC2 guarantees 99.95% availability, and is widely used in industry. It eases some of the vendor lock-in fears.
 
+#**4+1 Architectural Views**
+
+#**Logical View
+![Logical View Diagram](./diagrams/logical_view_1.png)
+
+![Logical View Diagram](./diagrams/logical_view_2.png)
+
+![Logical View Diagram](./diagrams/logical_view_3.png)
+
+
+#**Process View
+
+![Process View Diagram](./diagrams/process_view_1_post.png)
+
+![Process View Diagram](./diagrams/process_view_2_comment.png)
+
+![Process View Diagram](./diagrams/process_view_3_updown.png)
+
+
+
+
+
+#**Development view
+
+#**Physical view
+
+#**Scenarios
