@@ -103,6 +103,8 @@ Amazon SimpleDB and Amazon Simple Queue Service (Amazon SQS), to provide a compl
 
 ![Logical View Diagram](./diagrams/logical_view_3.png)
 
+![Logical View Diagram](./diagrams/logical_view_4_package.png)
+
 
 #**Process View
 
