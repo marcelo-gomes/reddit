@@ -94,7 +94,7 @@ Amazon SimpleDB and Amazon Simple Queue Service (Amazon SQS), to provide a compl
  - **It is reliable:**
 	* Amazon EC2 guarantees 99.95% availability, and is widely used in industry. It eases some of the vendor lock-in fears.
 
-Back to top[#table-of-contents]
+Back to top(#table-of-contents)
 
 #**4+1 Architectural Views**
 
@@ -107,7 +107,7 @@ Back to top[#table-of-contents]
 
 ![Logical View Diagram](./diagrams/logical_view_4_package.png)
 
-Back to top[#table-of-contents]
+Back to top(#table-of-contents)
 
 
 #**Process View
@@ -119,12 +119,12 @@ Back to top[#table-of-contents]
 ![Process View Diagram](./diagrams/process_view_3_updown.png)
 
 
-Back to top[#table-of-contents]
+Back to top(#table-of-contents)
 
 
 #**Development view
 
-Back to top[#table-of-contents]
+Back to top(#table-of-contents)
 
 
 #**Physical view
@@ -132,11 +132,11 @@ Back to top[#table-of-contents]
 
 ![Process View Diagram](./diagrams/postgres.png)
 
-Back to top[#table-of-contents]
+Back to top(#table-of-contents)
 
 
 #**Scenarios
 
 
-Back to top[#table-of-contents]
+Back to top(#table-of-contents)
 
