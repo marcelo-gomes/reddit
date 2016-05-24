@@ -1,4 +1,4 @@
-# **Reddit** <img src="./images/deadpool.png" alt="Deadpool" float="left" width ="70" />
+# **Reddit** <img src="./images/deadpool.png" alt="Deadpool" float="left" width ="70" /> <img src="./images/GOT.png" alt="Deadpool" float="left" width ="70" />
 
 
 
