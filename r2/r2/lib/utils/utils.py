@@ -1022,7 +1022,7 @@ def fetch_things2(query, chunk_size = 100, batch_fn = None, chunks = False):
             query._after(after)
             items = list(query)
 
-def fix_if_broken(thing, delete = True, fudge_links = False):
+def fix_if_broken(thing, delete = True, fudge_links = False): # fudge_links is never used
     from r2.models import Link, Comment, Subreddit, Message
 
     # the minimum set of attributes that are required
@@ -1056,7 +1056,7 @@ def fix_if_broken(thing, delete = True, fudge_links = False):
                         print "Fudging %s.sr_id to %d" % (thing._fullname,
                                                           thing.sr_id)
                     elif attr == "author_id":
-                        thing.author_id = 8244672
+                        thing.author_id = 8244672 # lol hardcoding
                         print "Fudging %s.author_id to %d" % (thing._fullname,
                                                               thing.author_id)
                     else:
