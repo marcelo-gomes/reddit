@@ -1,5 +1,7 @@
-# **Reddit** 
-<img align="right;" src="./images/deadpool.png">
+# **Reddit** <img src="./images/deadpool.png" alt="Deadpool" float="left" width ="70" />
+
+
+
 
 Group Elements
 ==================
