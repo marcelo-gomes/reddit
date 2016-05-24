@@ -1,5 +1,5 @@
 # **Reddit** 
-<img style="float: right;" src="./images/deadpool.jpg">
+<img style="float: right;" src="./images/deadpool.png">
 
 Group Elements
 ==================
