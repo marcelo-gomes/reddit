@@ -31,6 +31,7 @@ import os
 import random
 import re
 import signal
+import time
 import traceback
 
 from collections import OrderedDict
@@ -158,8 +159,11 @@ class Results():
         row = self.rp.fetchone()
         if row:
             if self.do_batch:
-                row = tup(row)
-                return self.fn(row)[0]
+                if isinstance(row, Storage):
+                    rows = (row,)
+                else:
+                    rows = tup(row)
+                return self.fn(rows)[0]
             else:
                 return self.fn(row)
         else:
@@ -1022,7 +1026,7 @@ def fetch_things2(query, chunk_size = 100, batch_fn = None, chunks = False):
             query._after(after)
             items = list(query)
 
-def fix_if_broken(thing, delete = True, fudge_links = False): # fudge_links is never used
+def fix_if_broken(thing, delete = True, fudge_links = False): 
     from r2.models import Link, Comment, Subreddit, Message
 
     # the minimum set of attributes that are required
@@ -1033,18 +1037,31 @@ def fix_if_broken(thing, delete = True, fudge_links = False): # fudge_links is n
     if thing.__class__ not in attrs:
         raise TypeError
 
-    tried_loading = False
     for attr in attrs[thing.__class__]:
         try:
             # try to retrieve the attribute
             getattr(thing, attr)
         except AttributeError:
-            # that failed; let's explicitly load it and try again
+            if not delete:
+                raise
 
-            if not tried_loading:
-                tried_loading = True
-                thing._load()
+            if isinstance(thing, Link) and fudge_links:
+                if attr == "sr_id":
+                    thing.sr_id = 6
+                    print "Fudging %s.sr_id to %d" % (thing._fullname,
+                                                      thing.sr_id)
+                elif attr == "author_id":
+                    thing.author_id = 8244672
+                    print "Fudging %s.author_id to %d" % (thing._fullname,
+                                                          thing.author_id)
+                else:
+                    print "Got weird attr %s; can't fudge" % attr
 
+            if not thing._deleted:
+                print "%s is missing %r, deleting" % (thing._fullname, attr)
+                thing._deleted = True
+
+<<<<<<< HEAD
             try:
                 getattr(thing, attr)
             except AttributeError:
@@ -1070,6 +1087,12 @@ def fix_if_broken(thing, delete = True, fudge_links = False): # fudge_links is n
 
                 if not fudge_links:
                     break
+=======
+            thing._commit()
+
+            if not fudge_links:
+                break
+>>>>>>> reddit/master
 
 
 def find_recent_broken_things(from_time = None, to_time = None,
@@ -1809,6 +1832,33 @@ def squelch_exceptions(fn):
 
 EPOCH = datetime(1970, 1, 1, tzinfo=pytz.UTC)
 
+
 def epoch_timestamp(dt):
     """Returns the number of seconds from the epoch to date."""
     return (dt - EPOCH).total_seconds()
+
+
+def rate_limiter(max_per_second):
+    """Limit number of calls to returned closure per second to max_per_second
+    algorithm adapted from here:
+        http://blog.gregburek.com/2011/12/05/Rate-limiting-with-decorators/
+    """
+    min_interval = 1.0 / float(max_per_second)
+    # last_time_called needs to be a list so we can do a closure on it
+    last_time_called = [0.0]
+
+    def throttler():
+        elapsed = time.clock() - last_time_called[0]
+        left_to_wait = min_interval - elapsed
+        if left_to_wait > 0:
+            time.sleep(left_to_wait)
+        last_time_called[0] = time.clock()
+    return throttler
+
+
+def rate_limited_generator(rate_limit_per_second, iterable):
+    """Yield from iterable without going over rate limit"""
+    throttler = rate_limiter(rate_limit_per_second)
+    for i in iterable:
+        throttler()
+        yield i

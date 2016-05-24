@@ -97,6 +97,7 @@ menu =   MenuHandler(hot          = _('hot'),
                      jobs         = _('jobs'),
                      transparency = _("transparency"),
                      source_code  = _("source code"),
+                     values       = _("values"),
 
                      #preferences
                      options      = _('options'),
@@ -105,7 +106,7 @@ menu =   MenuHandler(hot          = _('hot'),
                      friends      = _("friends"),
                      blocked      = _("blocked"),
                      update       = _("password/email"),
-                     delete       = _("delete"),
+                     deactivate   = _("deactivate"),
                      security     = _("security"),
 
                      # messages
@@ -115,7 +116,6 @@ menu =   MenuHandler(hot          = _('hot'),
 
                      # comments
                      comments     = _("comments {toolbar}"),
-                     related      = _("related"),
                      details      = _("details"),
                      duplicates   = _("other discussions (%(num)s)"),
                      traffic      = _("traffic stats"),
@@ -187,6 +187,7 @@ menu =   MenuHandler(hot          = _('hot'),
                      unpaid_promos  = _('unpaid'),
                      pending_promos = _('pending'),
                      rejected_promos = _('rejected'),
+                     edited_live_promos = _('edited live'),
 
                      sitewide = _('sitewide'),
                      languages = _('languages'),

@@ -29,6 +29,7 @@ import locale
 import json
 import logging
 import os
+import re
 import signal
 import site
 import socket
@@ -39,6 +40,7 @@ from sqlalchemy import engine, event
 from baseplate import Baseplate, config as baseplate_config
 from baseplate.thrift_pool import ThriftConnectionPool
 from baseplate.context.thrift import ThriftContextFactory
+from baseplate.server import einhorn
 
 import pkg_resources
 import pytz
@@ -54,6 +56,7 @@ from r2.lib.cache import (
     HardCache,
     HardcacheChain,
     LocalCache,
+    Mcrouter,
     MemcacheChain,
     Permacache,
     SelfEmptyingCache,
@@ -65,6 +68,7 @@ from r2.lib.cache import (
 from r2.lib.configparse import ConfigValue, ConfigValueParser
 from r2.lib.contrib import ipaddress
 from r2.lib.contrib.activity_thrift import ActivityService
+from r2.lib.contrib.activity_thrift.ttypes import ActivityInfo
 from r2.lib.eventcollector import EventQueue
 from r2.lib.lock import make_lock_factory
 from r2.lib.manager import db_manager
@@ -208,12 +212,19 @@ class Globals(object):
             'RL_OAUTH_RESET_MINUTES',
             'comment_karma_display_floor',
             'link_karma_display_floor',
+            'mobile_auth_gild_time',
+            'default_total_budget_pennies',
+            'min_total_budget_pennies',
+            'max_total_budget_pennies',
+            'default_bid_pennies',
+            'min_bid_pennies',
+            'max_bid_pennies',
+            'frequency_cap_min',
+            'frequency_cap_default',
+            'eu_cookie_max_attempts',
         ],
 
         ConfigValue.float: [
-            'default_promote_bid',
-            'min_promote_bid',
-            'max_promote_bid',
             'statsd_sample_rate',
             'querycache_prune_chance',
             'RL_AVG_REQ_PER_SEC',
@@ -248,6 +259,7 @@ class Globals(object):
             'ENFORCE_RATELIMIT',
             'RL_SITEWIDE_ENABLED',
             'RL_OAUTH_SITEWIDE_ENABLED',
+            'enable_loggedout_experiments',
         ],
 
         ConfigValue.tuple: [
@@ -288,7 +300,7 @@ class Globals(object):
         ],
 
         ConfigValue.dict(ConfigValue.str, ConfigValue.int): [
-            'agents',
+            'user_agent_ratelimit_regexes',
         ],
 
         ConfigValue.str: [
@@ -334,6 +346,8 @@ class Globals(object):
     live_config_spec = {
         ConfigValue.bool: [
             'frontend_logging',
+            'mobile_gild_first_login',
+            'precomputed_comment_suggested_sort',
         ],
         ConfigValue.int: [
             'captcha_exempt_comment_karma',
@@ -343,6 +357,9 @@ class Globals(object):
             'create_sr_link_karma',
             'cflag_min_votes',
             'ads_popularity_threshold',
+            'precomputed_comment_sort_min_comments',
+            'comment_vote_update_threshold',
+            'comment_vote_update_period',
         ],
         ConfigValue.float: [
             'cflag_lower_bound',
@@ -355,11 +372,13 @@ class Globals(object):
             'events_collector_poison_sample_rate',
             'events_collector_mod_sample_rate',
             'events_collector_quarantine_sample_rate',
+            'events_collector_modmail_sample_rate',
             'events_collector_report_sample_rate',
             'events_collector_submit_sample_rate',
             'events_collector_comment_sample_rate',
             'events_collector_use_gzip_chance',
             'https_cert_testing_probability',
+            'precomputed_comment_sort_read_chance',
         ],
         ConfigValue.tuple: [
             'fastlane_links',
@@ -367,6 +386,8 @@ class Globals(object):
             'discovery_srs',
             'proxy_gilding_accounts',
             'mweb_blacklist_expressions',
+            'global_loid_experiments',
+            'precomputed_comment_sorts',
         ],
         ConfigValue.str: [
             'listing_chooser_gold_multi',
@@ -389,6 +410,8 @@ class Globals(object):
         ],
         ConfigValue.dict(ConfigValue.str, ConfigValue.str): [
             'employee_approved_clients',
+            'modmail_forwarding_email',
+            'modmail_account_map',
         ],
         ConfigValue.dict(ConfigValue.str, ConfigValue.choice(**PERMISSIONS)): [
             'employees',
@@ -533,6 +556,12 @@ class Globals(object):
             "r2.provider.image_resizing",
             self.image_resizing_provider,
         )
+        self.email_provider = select_provider(
+            self.config,
+            self.pkg_resources_working_set,
+            "r2.provider.email",
+            self.email_provider,
+        )
         self.startup_timer.intermediate("providers")
 
         ################# CONFIGURATION
@@ -634,6 +663,12 @@ class Globals(object):
                                         self.RL_RESET_SECONDS)
         self.RL_SHARE_MAX_REQS = int(self.config["RL_SHARE_AVG_PER_SEC"] *
                                      self.RL_RESET_SECONDS)
+
+        # Compile ratelimit regexs
+        user_agent_ratelimit_regexes = {}
+        for agent_re, limit in self.user_agent_ratelimit_regexes.iteritems():
+            user_agent_ratelimit_regexes[re.compile(agent_re)] = limit
+        self.user_agent_ratelimit_regexes = user_agent_ratelimit_regexes
 
         self.startup_timer.intermediate("configuration")
 
@@ -771,7 +806,7 @@ class Globals(object):
         self.startup_timer.intermediate("memcache")
 
         ################# MCROUTER
-        self.mcrouter = CMemcache(
+        self.mcrouter = Mcrouter(
             "mcrouter",
             self.mcrouter_addr,
             min_compress_len=1400,
@@ -781,6 +816,11 @@ class Globals(object):
         ################# THRIFT-BASED SERVICES
         activity_endpoint = self.config.get("activity_endpoint")
         if activity_endpoint:
+            # make ActivityInfo objects rendercache-key friendly
+            # TODO: figure out a more general solution for this if
+            # we need to do this for other thrift-generated objects
+            ActivityInfo.cache_key = lambda self, style: repr(self)
+
             activity_pool = ThriftConnectionPool(activity_endpoint, timeout=0.1)
             self.baseplate.add_to_context("activity_service",
                 ThriftContextFactory(activity_pool, ActivityService.Client))
@@ -833,6 +873,36 @@ class Globals(object):
         cache_chains.update(cache=self.cache)
 
         if stalecaches:
+            self.thingcache = StaleCacheChain(
+                localcache_cls(),
+                stalecaches,
+                self.mcrouter,
+            )
+        else:
+            self.thingcache = CacheChain((localcache_cls(), self.mcrouter))
+        cache_chains.update(thingcache=self.thingcache)
+
+        def get_new_account_prefix_and_key(key, prefix=''):
+            old_prefix = "Account_"
+            new_prefix = "account:"
+
+            if prefix:
+                assert prefix == old_prefix
+                return new_prefix, key
+            else:
+                key = str(key)
+                assert key.startswith(old_prefix)
+                account_id = key[len(old_prefix):]
+                return '', new_prefix + account_id
+
+        self.account_transitionalcache = TransitionalCache(
+            original_cache=self.cache,
+            replacement_cache=self.thingcache,
+            read_original=True,
+            key_transform=get_new_account_prefix_and_key,
+        )
+
+        if stalecaches:
             self.memoizecache = StaleCacheChain(
                 localcache_cls(),
                 stalecaches,
@@ -883,21 +953,19 @@ class Globals(object):
         ))
         cache_chains.update(pagecache=self.pagecache)
 
-        # the thing_cache is used in tdb_cassandra.
-        self.thing_cache = CacheChain((localcache_cls(),), check_keys=False)
-        cache_chains.update(thing_cache=self.thing_cache)
+        # cassandra_local_cache is used for request-local caching in tdb_cassandra
+        self.cassandra_local_cache = localcache_cls()
+        cache_chains.update(cassandra_local_cache=self.cassandra_local_cache)
 
         if stalecaches:
             permacache_cache = StaleCacheChain(
                 localcache_cls(),
                 stalecaches,
                 permacache_memcaches,
-                check_keys=False,
             )
         else:
             permacache_cache = CacheChain(
                 (localcache_cls(), permacache_memcaches),
-                check_keys=False,
             )
         cache_chains.update(permacache=permacache_cache)
 
@@ -925,7 +993,9 @@ class Globals(object):
                     chain = chain.read_chain
 
                 chain.reset()
-                if isinstance(chain, StaleCacheChain):
+                if isinstance(chain, LocalCache):
+                    continue
+                elif isinstance(chain, StaleCacheChain):
                     chain.stats = StaleCacheStats(self.stats, name)
                 else:
                     chain.stats = CacheStats(self.stats, name)
@@ -966,6 +1036,9 @@ class Globals(object):
                 datetime.now().strftime("%H:%M:%S"),
                 self.startup_timer.elapsed_seconds()
             )
+
+        if einhorn.is_worker():
+            einhorn.ack_startup()
 
     def record_repo_version(self, repo_name, git_dir):
         """Get the currently checked out git revision for a given repository,

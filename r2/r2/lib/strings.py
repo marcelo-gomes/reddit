@@ -71,7 +71,7 @@ string_dict = dict(
 
     multiple_submitted = _("that link has been submitted to multiple subreddits. you can try to [submit it again](%s)."),
 
-    user_deleted = _("your account has been deleted, but we won't judge you for it."),
+    user_deactivated = _("your account has been deactivated, but we won't judge you for it."),
 
     oauth_login_msg = _(
         "Log in or sign up to connect your reddit account with %(app)s."),
@@ -118,7 +118,7 @@ string_dict = dict(
     heavy_load_msg = _("this page is temporarily in read-only mode due to heavy traffic."),
     in_perma_timeout_msg = _("Your account has been permanently [suspended](https://reddit.zendesk.com/hc/en-us/articles/205687686) from Reddit."),
     in_temp_timeout_msg = _("Your account has been [suspended](https://reddit.zendesk.com/hc/en-us/articles/205687686) from Reddit for %(days)s."),
-    gold_benefits_msg = "reddit gold is reddit's premium membership program. Here are the benefits:\n\n* [Extra site features](/gold/about)\n* [Extra perks](/gold/partners)\n* Discuss and get help on the features and perks at /r/goldbenefits",
+    gold_benefits_msg = "reddit gold is our premium membership program. It grants you access to [extra features](https://www.reddit.com/gold/about) to improve your reddit experience. It also makes you really quite dapper. If you have questions about your gold, please visit /r/goldbenefits.",
     lounge_msg = "Grab a drink and join us in /r/lounge, the super-secret members-only community that may or may not exist.",
     postcard_msg = _("You sent us a postcard! (Or something similar.) When we run out of room on our refrigerator, we might one day auction off the stuff that people sent in. Is it okay if we include your thing?"),
     over_comment_limit = _("Sorry, the maximum number of comments is %(max)d. (However, if you subscribe to reddit gold, it goes up to %(goldmax)d.)"),

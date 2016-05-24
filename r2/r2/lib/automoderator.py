@@ -66,6 +66,7 @@ from r2.models import (
     Comment,
     DeletedUser,
     Frontpage,
+    Inbox,
     LastModified,
     Link,
     Message,
@@ -97,6 +98,10 @@ def replace_placeholders(string, data, matches):
         "{{author}}": data["author"].name,
         "{{body}}": getattr(item, "body", ""),
         "{{subreddit}}": data["subreddit"].name,
+        "{{author_flair_text}}": data["author"].flair_text(
+            data["subreddit"]._id, obey_disabled=True),
+        "{{author_flair_css_class}}": data["author"].flair_css_class(
+            data["subreddit"]._id, obey_disabled=True),
     }
 
     if isinstance(item, Comment):
@@ -1432,6 +1437,14 @@ class Rule(object):
             new_comment.distinguished = "yes"
             new_comment.sendreplies = False
             new_comment._commit()
+
+            # If the comment isn't going to be put into the user's inbox
+            # due to them having sendreplies disabled, force it. For a normal
+            # mod, distinguishing the comment would do this, but it doesn't
+            # happen here since we're setting .distinguished directly.
+            if isinstance(item, Link) and not inbox_rel:
+                inbox_rel = Inbox._add(data["author"], new_comment, "selfreply")
+
             queries.new_comment(new_comment, inbox_rel)
 
             if self.comment_stickied:

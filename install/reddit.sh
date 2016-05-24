@@ -116,11 +116,17 @@ function clone_reddit_plugin_repo {
     clone_reddit_repo $1 reddit/reddit-plugin-$1
 }
 
+function clone_reddit_service_repo {
+    clone_reddit_repo $1 reddit/reddit-service-$1
+}
+
 clone_reddit_repo reddit reddit/reddit
 clone_reddit_repo i18n reddit/reddit-i18n
 for plugin in $REDDIT_PLUGINS; do
     clone_reddit_plugin_repo $plugin
 done
+clone_reddit_service_repo websockets
+clone_reddit_service_repo activity
 
 ###############################################################################
 # Configure Services
@@ -142,9 +148,10 @@ $RUNDIR/setup_rabbitmq.sh
 # Install and configure the reddit code
 ###############################################################################
 function install_reddit_repo {
-    cd $REDDIT_SRC/$1
+    pushd $REDDIT_SRC/$1
     sudo -u $REDDIT_USER python setup.py build
     python setup.py develop --no-deps
+    popd
 }
 
 install_reddit_repo reddit/r2
@@ -152,16 +159,17 @@ install_reddit_repo i18n
 for plugin in $REDDIT_PLUGINS; do
     install_reddit_repo $plugin
 done
+install_reddit_repo websockets
+install_reddit_repo activity
 
 # generate binary translation files from source
-cd $REDDIT_SRC/i18n/
-sudo -u $REDDIT_USER make clean all
+sudo -u $REDDIT_USER make -C $REDDIT_SRC/i18n clean all
 
 # this builds static files and should be run *after* languages are installed
 # so that the proper language-specific static files can be generated and after
 # plugins are installed so all the static files are available.
-cd $REDDIT_SRC/reddit/r2
-sudo -u $REDDIT_USER make clean all
+pushd $REDDIT_SRC/reddit/r2
+sudo -u $REDDIT_USER make clean pyx
 
 plugin_str=$(echo -n "$REDDIT_PLUGINS" | tr " " ,)
 if [ ! -f development.update ]; then
@@ -206,6 +214,8 @@ sudo -u $REDDIT_USER make ini
 if [ ! -L run.ini ]; then
     sudo -u $REDDIT_USER ln -nsf development.ini run.ini
 fi
+
+popd
 
 ###############################################################################
 # some useful helper scripts
@@ -409,9 +419,9 @@ frontend frontend
     acl is-ssl dst_port 8080
     reqadd X-Forwarded-Proto:\ https if is-ssl
 
-    # send websockets to sutro
+    # send websockets to the websocket service
     acl is-websocket hdr(Upgrade) -i WebSocket
-    use_backend sutro if is-websocket
+    use_backend websockets if is-websocket
 
     # send media stuff to the local nginx
     acl is-media path_beg /media/
@@ -433,13 +443,13 @@ backend reddit
 
     server app01-8001 localhost:8001 maxconn 30
 
-backend sutro
+backend websockets
     mode http
     timeout connect 4s
     timeout server 24h
     balance roundrobin
 
-    server sutro localhost:8002 maxconn 250
+    server websockets localhost:9001 maxconn 250
 
 backend media
     mode http
@@ -464,67 +474,15 @@ HAPROXY
 service haproxy restart
 
 ###############################################################################
-# sutro (websocket server)
+# websocket service
 ###############################################################################
 
-if [ ! -f /etc/sutro.ini ]; then
-    cat > /etc/sutro.ini <<SUTRO
-[app:main]
-paste.app_factory = sutro.app:make_app
+if [ ! -f /etc/init/reddit-websockets.conf ]; then
+    cat > /etc/init/reddit-websockets.conf << UPSTART_WEBSOCKETS
+description "websockets service"
 
-amqp.host = localhost
-amqp.port = 5672
-amqp.vhost = /
-amqp.username = reddit
-amqp.password = reddit
-
-web.allowed_origins = $REDDIT_DOMAIN
-web.mac_secret = YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXowMTIzNDU2Nzg5
-web.ping_interval = 300
-
-stats.host =
-stats.port = 0
-
-[server:main]
-use = egg:gunicorn#main
-worker_class = sutro.socketserver.SutroWorker
-workers = 1
-worker_connections = 250
-host = 127.0.0.1
-port = 8002
-graceful_timeout = 5
-forward_allow_ips = 127.0.0.1
-
-[loggers]
-keys = root
-
-[handlers]
-keys = syslog
-
-[formatters]
-keys = generic
-
-[logger_root]
-level = INFO
-handlers = syslog
-
-[handler_syslog]
-class = handlers.SysLogHandler
-args = ("/dev/log", "local7")
-formatter = generic
-level = NOTSET
-
-[formatter_generic]
-format = [%(name)s] %(message)s
-SUTRO
-fi
-
-if [ ! -f /etc/init/sutro.conf ]; then
-    cat > /etc/init/sutro.conf << UPSTART_SUTRO
-description "sutro websocket server"
-
-stop on runlevel [!2345]
-start on runlevel [2345]
+stop on runlevel [!2345] or reddit-restart all or reddit-restart websockets
+start on runlevel [2345] or reddit-restart all or reddit-restart websockets
 
 respawn
 respawn limit 10 5
@@ -532,11 +490,32 @@ kill timeout 15
 
 limit nofile 65535 65535
 
-exec gunicorn_paster /etc/sutro.ini
-UPSTART_SUTRO
+exec baseplate-serve2 --bind localhost:9001 $REDDIT_SRC/websockets/example.ini
+UPSTART_WEBSOCKETS
 fi
 
-service sutro restart
+service reddit-websockets restart
+
+###############################################################################
+# activity service
+###############################################################################
+
+if [ ! -f /etc/init/reddit-activity.conf ]; then
+    cat > /etc/init/reddit-activity.conf << UPSTART_ACTIVITY
+description "activity service"
+
+stop on runlevel [!2345] or reddit-restart all or reddit-restart activity
+start on runlevel [2345] or reddit-restart all or reddit-restart activity
+
+respawn
+respawn limit 10 5
+kill timeout 15
+
+exec baseplate-serve2 --bind localhost:9002 $REDDIT_SRC/activity/example.ini
+UPSTART_ACTIVITY
+fi
+
+service reddit-activity restart
 
 ###############################################################################
 # geoip service
@@ -641,3 +620,7 @@ PGPASSWORD=password
 #0    0 * * * root /sbin/start --quiet reddit-job-update_gold_users
 CRON
 fi
+
+# print this out here. if vagrant's involved, it's gonna do more steps
+# afterwards and then re-run this script but that's ok.
+$RUNDIR/done.sh

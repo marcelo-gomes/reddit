@@ -149,6 +149,7 @@ class ListingController(RedditController):
                                page_classes=self.extra_page_classes,
                                show_sidebar=self.show_sidebar,
                                show_chooser=self.show_chooser,
+                               show_newsletterbar=True,
                                nav_menus=self.menus,
                                title=self.title(),
                                infotext=self.infotext,
@@ -347,7 +348,9 @@ class ListingWithPromos(SubredditListingController):
         except NotFound:
             self.abort404()
 
-        if not promote.is_live_on_sr(link, c.site):
+        is_link_creator = c.user_is_loggedin and (c.user._id == link.author_id)
+        if (not (is_link_creator or c.user_is_sponsor) and
+                not promote.is_live_on_sr(link, c.site)):
             self.abort403()
 
         res = wrap_links([link._fullname], wrapper=self.builder_wrapper,
@@ -534,7 +537,7 @@ class HotController(ListingWithPromos):
     @require_oauth2_scope("read")
     @listing_api_doc(uri='/hot', uses_site=True)
     def GET_listing(self, **env):
-        self.infotext = request.GET.get('deleted') and strings.user_deleted
+        self.infotext = request.GET.get('deactivated') and strings.user_deactivated
         return ListingController.GET_listing(self, **env)
 
 class NewController(ListingWithPromos):
@@ -903,6 +906,16 @@ class UserController(ListingController):
             request.environ['usable_error_content'] = errpage.render()
             return self.abort403()
 
+        if (c.user_is_loggedin and
+                not c.user_is_admin and
+                vuser._id in c.user.enemies):
+            errpage = InterstitialPage(
+                _("blocked"),
+                content=UserBlockedInterstitial(),
+            )
+            request.environ['usable_error_content'] = errpage.render()
+            return self.abort403()
+
         # continue supporting /liked and /disliked paths for API clients
         # but 301 redirect non-API users to the new location
         changed_wheres = {"liked": "upvoted", "disliked": "downvoted"}
@@ -1085,8 +1098,7 @@ class MessageController(ListingController):
 
     def keep_fn(self):
         def keep(item):
-            wouldkeep = item.keep_item(item)
-
+            wouldkeep = True
             # TODO: Consider a flag to disable this (and see above plus builder.py)
             if item._deleted and not c.user_is_admin:
                 return False
@@ -1094,18 +1106,37 @@ class MessageController(ListingController):
                     item.author_id != c.user._id and
                     not c.user_is_admin):
                 return False
+
+            if self.where == 'unread' or self.subwhere == 'unread':
+                # don't show user their own unread stuff
+                if item.author_id == c.user._id:
+                    wouldkeep = False
+                else:
+                    wouldkeep = item.new
+            elif item.is_mention:
+                wouldkeep = (
+                    c.user.name.lower() in extract_user_mentions(item.body)
+                )
+
+            if c.user_is_admin:
+                return wouldkeep
+
+            if (hasattr(item, "subreddit") and
+                    item.subreddit.is_moderator(c.user)):
+                return wouldkeep
+
             if item.author_id in c.user.enemies:
                 return False
-            # don't show user their own unread stuff
-            if ((self.where == 'unread' or self.subwhere == 'unread')
-                and (item.author_id == c.user._id or not item.new)):
+
+            # do not show messages which were deleted on recipient
+            if (isinstance(item, Message) and
+                    item.to_id == c.user._id and item.del_on_recipient):
                 return False
 
-            if (item.is_mention and
-                c.user.name.lower() not in extract_user_mentions(item.body)):
-                return False
+            if item.author_id == c.user._id:
+                return wouldkeep
 
-            return wouldkeep
+            return wouldkeep and item.keep_item(item)
         return keep
 
     @staticmethod
@@ -1166,7 +1197,8 @@ class MessageController(ListingController):
             enable_threaded = (
                 (self.where == "moderator" or
                     parent and parent.sr_id) and
-                c.user.pref_threaded_modmail
+                c.user.pref_threaded_modmail and
+                c.render_style == "html"
             )
 
             return message_cls(
@@ -1267,7 +1299,7 @@ class MessageController(ListingController):
 
     @property
     def render_params(self):
-        render_params = {}
+        render_params = {'source': self.source}
 
         # event target for screenviews
         event_target = {}
@@ -1327,6 +1359,13 @@ class MessageController(ListingController):
             c.referrer_policy = "always"
         if self.where == 'unread':
             self.next_suggestions_cls = UnreadMessagesSuggestions
+
+        if self.message:
+            self.source = "permalink"
+        elif self.where in {"moderator", "multi"}:
+            self.source = "modmail"
+        else:
+            self.source = "usermail"
 
         return ListingController.GET_listing(self, **env)
 
@@ -1534,30 +1573,23 @@ class MyredditsController(ListingController):
     def query(self):
         if self.where == 'moderator' and not c.user.is_moderator_somewhere:
             return []
-        elif self.where == "subscriber":
+
+        if self.where == "subscriber":
             sr_ids = Subreddit.subscribed_ids_by_user(c.user)
-            sr_fullnames = [
-                Subreddit._fullname_from_id36(to36(sr_id)) for sr_id in sr_ids]
-            return sr_fullnames
         else:
-            q = SRMember._query(
+            q = SRMember._simple_query(
+                ["_thing1_id"],
                 SRMember.c._name == self.where,
                 SRMember.c._thing2_id == c.user._id,
                 #hack to prevent the query from
                 #adding it's own date
                 sort=(desc('_t1_ups'), desc('_t1_date')),
-                eager_load=True,
-                thing_data=True,
-                thing_stale=True,
             )
-            return q
+            sr_ids = [row._thing1_id for row in q]
 
-    def prewrap_fn(self):
-        if self.where != "subscriber":
-            def sr_from_srmember(srmember):
-                sr = srmember._thing1
-                return sr
-            return sr_from_srmember
+        sr_fullnames = [
+            Subreddit._fullname_from_id36(to36(sr_id)) for sr_id in sr_ids]
+        return sr_fullnames
 
     def content(self):
         user = c.user if c.user_is_loggedin else None
@@ -1577,13 +1609,8 @@ class MyredditsController(ListingController):
         return stack
 
     def build_listing(self, after=None, **kwargs):
-        if after:
-            if self.where == "subscriber":
-                if not isinstance(after, Subreddit):
-                    abort(400, 'gimme a subreddit')
-            else:
-                after = SRMember._fast_query(
-                    after, c.user, self.where, data=False).values()[0]
+        if after and not isinstance(after, Subreddit):
+            abort(400, 'gimme a subreddit')
 
         return ListingController.build_listing(self, after=after, **kwargs)
 
@@ -1633,15 +1660,22 @@ class CommentsController(SubredditListingController):
 
     def keep_fn(self):
         def keep(item):
-            can_see_spam = (c.user_is_loggedin and
-                            (item.author_id == c.user._id or
-                             c.user_is_admin or
-                             item.subreddit.is_moderator(c.user)))
-            can_see_deleted = c.user_is_loggedin and c.user_is_admin
+            if c.user_is_admin:
+                return True
 
-            return ((not item._spam or can_see_spam) and
-                    (not item._deleted or can_see_deleted))
+            if item._deleted:
+                return False
 
+            if c.user_is_loggedin:
+                if item.subreddit.is_moderator(c.user):
+                    return True
+
+                if item.author_id == c.user._id:
+                    return True
+
+            if item._spam:
+                return False
+            return item.keep_item(item)
         return keep
 
     def query(self):

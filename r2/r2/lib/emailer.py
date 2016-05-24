@@ -41,14 +41,19 @@ from r2.models.token import EmailVerificationToken, PasswordResetToken
 
 trylater_hooks = hooks.HookRegistrar()
 
-def _system_email(email, body, kind, reply_to = "", thing = None,
-                  from_address=g.feedback_email, user=None):
+def _system_email(email, plaintext_body, kind, reply_to="",
+        thing=None, from_address=g.feedback_email,
+        html_body="", list_unsubscribe_header="", user=None,
+        suppress_username=False):
     """
     For sending email from the system to a user (reply address will be
     feedback and the name will be reddit.com)
     """
-    if user is None and c.user_is_loggedin:
+    if suppress_username:
+        user = None
+    elif user is None and c.user_is_loggedin:
         user = c.user
+
     Email.handler.add_to_queue(user,
         email, g.domain, from_address, kind,
         body=body, reply_to=reply_to, thing=thing,
@@ -341,15 +346,16 @@ def _promo_email(thing, kind, body = "", **kw):
     body = Promo_Email(link = thing, kind = kind,
                        body = body, **kw).render(style = "email")
     return _system_email(a.email, body, kind, thing = thing,
-                         reply_to = "selfservicesupport@reddit.com")
+                         reply_to = g.selfserve_support_email,
+                         suppress_username=True)
 
 
 def new_promo(thing):
     return _promo_email(thing, Email.Kind.NEW_PROMO)
 
-def promo_bid(thing, bid, start_date):
-    return _promo_email(thing, Email.Kind.BID_PROMO, bid = bid,
-                        start_date = start_date)
+def promo_total_budget(thing, total_budget_dollars, start_date):
+    return _promo_email(thing, Email.Kind.BID_PROMO,
+        total_budget_dollars = total_budget_dollars, start_date = start_date)
 
 def accept_promo(thing):
     return _promo_email(thing, Email.Kind.ACCEPT_PROMO)
@@ -357,9 +363,12 @@ def accept_promo(thing):
 def reject_promo(thing, reason = ""):
     return _promo_email(thing, Email.Kind.REJECT_PROMO, reason)
 
-def queue_promo(thing, bid, trans_id):
-    return _promo_email(thing, Email.Kind.QUEUED_PROMO, bid = bid,
-                        trans_id = trans_id)
+def edited_live_promo(thing):
+    return _promo_email(thing, Email.Kind.EDITED_LIVE_PROMO)
+
+def queue_promo(thing, total_budget_dollars, trans_id):
+    return _promo_email(thing, Email.Kind.QUEUED_PROMO,
+        total_budget_dollars=total_budget_dollars, trans_id = trans_id)
 
 def live_promo(thing):
     return _promo_email(thing, Email.Kind.LIVE_PROMO)
@@ -372,8 +381,9 @@ def refunded_promo(thing):
     return _promo_email(thing, Email.Kind.REFUNDED_PROMO)
 
 
-def void_payment(thing, campaign, reason):
+def void_payment(thing, campaign, total_budget_dollars, reason):
     return _promo_email(thing, Email.Kind.VOID_PAYMENT, campaign=campaign,
+                        total_budget_dollars=total_budget_dollars,
                         reason=reason)
 
 

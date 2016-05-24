@@ -29,6 +29,7 @@ from r2.controllers.reddit_base import (
     paginated_listing,
     RedditController,
     require_https,
+    vary_pagecache_on_experiments,
 )
 from r2 import config
 from r2.models import *
@@ -69,7 +70,6 @@ from operator import attrgetter
 import string
 import random as rand
 import re
-import time as time_module
 from urllib import quote_plus
 
 class FrontController(RedditController):
@@ -99,7 +99,7 @@ class FrontController(RedditController):
     def GET_oldinfo(self, article, type, dest, rest=None, comment=''):
         """Legacy: supporting permalink pages from '06,
            and non-search-engine-friendly links"""
-        if not (dest in ('comments','related','details')):
+        if not (dest in ('comments','details')):
                 dest = 'comments'
         if type == 'ancient':
             #this could go in config, but it should never change
@@ -278,8 +278,7 @@ class FrontController(RedditController):
         c.can_embed = bool(comment) and article.is_embeddable
 
         is_embed = embeds.prepare_embed_request()
-
-        if is_embed:
+        if is_embed and comment:
             embeds.set_up_comment_embed(sr, comment, showedits=showedits)
 
         # Temporary hook until IAMA app "OP filter" is moved from partners
@@ -785,11 +784,15 @@ class FrontController(RedditController):
 
     def _edit_normal_reddit(self, location, created):
         if (location == 'edit' and
-            c.user_is_loggedin and
-            (c.user_is_admin or c.site.is_moderator_with_perms(c.user, 'config'))):
+                c.user_is_loggedin and
+                (c.user_is_admin or
+                    c.site.is_moderator_with_perms(c.user, 'config'))):
             pane = PaneStack()
+
             if created == 'true':
-                pane.append(InfoBar(message=strings.sr_created))
+                infobar_message = strings.sr_created
+                pane.append(InfoBar(message=infobar_message))
+
             c.allow_styles = True
             c.site = Subreddit._byID(c.site._id, data=True, stale=False)
             pane.append(CreateSubreddit(site=c.site))
@@ -928,7 +931,16 @@ class FrontController(RedditController):
         Data includes the subscriber count, description, and header image."""
         if not is_api() or isinstance(c.site, FakeSubreddit):
             return self.abort404()
-        item = Wrapped(c.site, accounts_active_count=c.site.accounts_active)
+
+        # we do this here so that item.accounts_active_count is only present on
+        # this one endpoint, and not all the /subreddit listings etc. since
+        # looking up activity across multiple subreddits is more work.
+        accounts_active_count = None
+        activity = c.site.count_activity()
+        if activity:
+            accounts_active_count = activity.logged_in.count
+
+        item = Wrapped(c.site, accounts_active_count=accounts_active_count)
         Subreddit.add_props(c.user, [item])
         return Reddit(content=item).render()
 
@@ -995,38 +1007,15 @@ class FrontController(RedditController):
         """The awards page."""
         return BoringPage(_("awards"), content=UserAwards()).render()
 
-    # filter for removing punctuation which could be interpreted as search syntax
-    related_replace_regex = re.compile(r'[?\\&|!{}+~^()"\':*-]+')
-    related_replace_with = ' '
-
     @base_listing
     @require_oauth2_scope("read")
     @validate(article=VLink('article'))
-    @api_doc(api_section.listings, uri="/related/{article}")
     def GET_related(self, num, article, after, reverse, count):
-        """Related page: performs a search using title of article as
-        the search query.
-
-        """
+        """Related page: removed, redirects to comments page."""
         if not can_view_link_comments(article):
             abort(403, 'forbidden')
 
-        query = self.related_replace_regex.sub(self.related_replace_with,
-                                               article.title)
-
-        rel_range = timedelta(days=3)
-        start = int(time_module.mktime((article._date - rel_range).utctimetuple()))
-        end = int(time_module.mktime((article._date + rel_range).utctimetuple()))
-        nsfw = article.is_nsfw
-
-        q = g.search.get_related_query(query, article, start, end, nsfw)
-
-        content = self._search(q, num=num, after=after, reverse=reverse,
-                               count=count)
-
-        return LinkInfoPage(link=article, content=content,
-                            page_classes=['related-page'],
-                            subtitle=_('related')).render()
+        self.redirect(article.make_permalink_slow(), code=301)
 
     @base_listing
     @require_oauth2_scope("read")
@@ -1115,6 +1104,8 @@ class FrontController(RedditController):
 
     search_help_page = "/wiki/search"
     verify_langs_regex = re.compile(r"\A[a-z][a-z](,[a-z][a-z])*\Z")
+
+    @vary_pagecache_on_experiments("aa_test_loggedout")
     @base_listing
     @require_oauth2_scope("read")
     @validate(query=VLength('q', max_length=512),
@@ -1720,8 +1711,10 @@ class FormsController(RedditController):
                                developed_apps=OAuth2Client._by_developer(c.user))
         elif location == 'feeds' and c.user.pref_private_feeds:
             content = PrefFeeds()
+        elif location == 'deactivate':
+            content = PrefDeactivate()
         elif location == 'delete':
-            content = PrefDelete()
+            return self.redirect('/prefs/deactivate', code=301)
         elif location == 'security':
             if c.user.name not in g.admins:
                 return self.redirect('/prefs/')
@@ -1730,7 +1723,6 @@ class FormsController(RedditController):
             return self.abort404()
 
         return PrefsPage(content=content, infotext=infotext).render()
-
 
     @validate(dest=VDestination())
     def GET_login(self, dest):

@@ -85,6 +85,9 @@ class FileSource(Source):
     def __init__(self, name):
         self.name = name
 
+    def __eq__(self, other):
+        return type(self) is type(other) and self.name == other.name
+
     def get_source(self, use_built_statics=False):
         if use_built_statics:
             # we are in the build system so we have already copied all files
@@ -124,18 +127,40 @@ class Module(Source):
         self.should_compile = kwargs.get('should_compile', True)
         self.wrap = kwargs.get('wrap')
         self.sources = []
+        filter_module = kwargs.get('filter_module')
+        if isinstance(filter_module, Module):
+            self.filter_sources = filter_module.get_flattened_sources([])
+        else:
+            self.filter_sources = None
         sources = sources or (name,)
         for source in sources:
             if not isinstance(source, Source):
                 if 'prefix' in kwargs:
                     source = os.path.join(kwargs['prefix'], source)
-                source = FileSource(source)
+                source = self.get_default_source(source)
             self.sources.append(source)
 
+    def get_default_source(self, source):
+        return FileSource(source)
+
+    def get_flattened_sources(self, flattened_sources):
+        for s in self.sources:
+            if s in flattened_sources:
+                continue
+            elif isinstance(s, Module):
+                s.get_flattened_sources(flattened_sources)
+            else:
+                flattened_sources.append(s)
+        if self.filter_sources:
+            flattened_sources = [s for s in flattened_sources
+                                 if s not in self.filter_sources]
+        return flattened_sources
+
     def get_source(self, use_built_statics=False):
+        sources = self.get_flattened_sources([])
         return ";".join(
             s.get_source(use_built_statics=use_built_statics)
-            for s in self.sources
+            for s in sources
         )
 
     def extend(self, module):
@@ -169,7 +194,8 @@ class Module(Source):
 
     def use(self, **kwargs):
         if g.uncompressedJS:
-            return "".join(source.use(**kwargs) for source in self.sources)
+            sources = self.get_flattened_sources([])
+            return "".join(source.use(**kwargs) for source in sources)
         else:
             return script_tag.format(src=self.url(**kwargs))
 
@@ -401,10 +427,74 @@ class LocalizedModule(Module):
             yield LocalizedModule.languagize_path(self.destination_path, lang)
 
 
+_submodule = {}
 module = {}
 
 catch_errors = "try {{ {content} }} catch (err) {{ r.sendError('Error running module', '{name}', ':', err.toString()) }}"
 
+
+_submodule["config"] = Module("_setup.js",
+    "base.js",
+    "setup.js",
+    "hooks.js",
+)
+
+_submodule["utils"] = Module("_utils.js",
+    "base.js",
+    _submodule["config"],
+    "utils.js",
+)
+
+_submodule["uibase"] = Module("_uibase.js",
+    "base.js",
+    "i18n.js",
+    _submodule["utils"],
+    "uibase.js",
+)
+
+_submodule["analytics"] = Module("_analytics.js",
+    "base.js",
+    _submodule["config"],
+    _submodule["utils"],
+    "events.js",
+    "analytics.js",
+)
+
+_submodule["errors"] = Module("_errors.js",
+    "base.js",
+    "i18n.js",
+    "errors.js",
+)
+
+_submodule["gate-popup"] = Module("_gate-popup.js",
+    "base.js",
+    _submodule["uibase"],
+    _submodule["errors"],
+    "gate-popup.js",
+)
+
+_submodule["timeouts"] = Module("_timeouts.js",
+    "base.js",
+    _submodule["config"],
+    _submodule["analytics"],
+    _submodule["gate-popup"],
+    "access.js",
+    "timeouts.js",
+)
+
+_submodule["locked"] = Module("_locked.js",
+    "base.js",
+    "access.js",
+    _submodule["gate-popup"],
+    "locked.js",
+)
+
+_submodule["archived"] = Module("_archived.js",
+    "base.js",
+    "hooks.js",
+    _submodule["gate-popup"],
+    "archived.js",
+)
 
 module["gtm-jail"] = Module("gtm-jail.js",
     "lib/json2.js",
@@ -525,10 +615,9 @@ module["reddit"] = LocalizedModule("reddit.js",
     "ui.js",
     "popup.js",
     "login.js",
-    "gate-popup.js",
-    "locked.js",
-    "timeouts.js",
-    "archived.js",
+    _submodule["locked"],
+    _submodule["timeouts"],
+    _submodule["archived"],
     "newsletter.js",
     "flair.js",
     "report.js",
@@ -548,11 +637,13 @@ module["reddit"] = LocalizedModule("reddit.js",
     "cache-poisoning-detection.js",
     "messages.js",
     "reddit-hook.js",
+    "warn-on-unload.js",
     PermissionsDataSource({
         "moderator": ModeratorPermissionSet,
         "moderator_invite": ModeratorPermissionSet,
     }),
     wrap=catch_errors,
+    filter_module=module["reddit-init-base"],
 )
 
 module["modtools"] = Module("modtools.js",
@@ -573,7 +664,8 @@ module["admin"] = Module("admin.js",
 module["mobile"] = LocalizedModule("mobile.js",
     module["reddit"],
     "lib/jquery.lazyload.js",
-    "compact.js"
+    "compact.js",
+    filter_module=module["reddit-init-base"],
 )
 
 
@@ -619,6 +711,10 @@ module["highlight"] = Module("highlight.js",
     "lib/highlight.pack.js",
     "highlight.js",
 )
+
+module["messagecompose"] = Module("messagecompose.js",
+    # jquery, hooks, ajax, preload
+    "messagecompose.js")
 
 module["less"] = Module('less.js',
     'lib/less-1.4.2.js',

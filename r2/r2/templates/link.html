@@ -170,8 +170,13 @@
 
   data-timestamp="${js_timestamp(what._date)}"
 
+  data-url="${thing.href_url}"
   data-domain="${what.domain}"
   data-rank="${what.num_text}"
+
+  %if getattr(what, 'can_ban', False):
+    data-can-ban="true"
+  %endif
 </%def>
 
 <%def name="subreddit()" buffered="True">
@@ -223,7 +228,7 @@
                               lastedited=capture(edited, thing, thing.lastedited)
                               ))}
   ${self.gildings()}
-  %if thing.stickied:
+  %if thing.use_sticky_style:
     &#32;-&#32;<span class="stickied-tagline" title="selected by this subreddit's moderators">stickied post</span>
   %endif
 

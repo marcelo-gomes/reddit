@@ -43,6 +43,8 @@ else:
     pyx_extensions = cythonize(pyx_files)
 
 
+# guard against import errors in case this is the first run of setup.py and we
+# don't have any dependencies (including baseplate) yet
 try:
     from baseplate.integration.thrift.command import ThriftBuildPyCommand
 except ImportError:
@@ -84,6 +86,8 @@ setup(
         "pylibmc==1.2.2",
         "webob",
         "webtest",
+        "python-snappy",
+        "httpagentparser==1.7.8",
     ],
     # setup tests (allowing for "python setup.py test")
     tests_require=['mock', 'nose', 'coverage'],
@@ -128,5 +132,8 @@ setup(
     imgix = r2.lib.providers.image_resizing.imgix:ImgixImageResizingProvider
     no_op = r2.lib.providers.image_resizing.no_op:NoOpImageResizingProvider
     unsplashit = r2.lib.providers.image_resizing.unsplashit:UnsplashitImageResizingProvider
+    [r2.provider.email]
+    null = r2.lib.providers.email.null:NullEmailProvider
+    mailgun = r2.lib.providers.email.mailgun:MailgunEmailProvider
     """,
 )

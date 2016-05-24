@@ -52,8 +52,6 @@ import hmac
 import hashlib
 from pycassa.system_manager import ASCII_TYPE
 
-from thrift import Thrift
-
 
 trylater_hooks = hooks.HookRegistrar()
 COOKIE_TIMESTAMP_FORMAT = '%Y-%m-%dT%H:%M:%S'
@@ -62,6 +60,7 @@ COOKIE_TIMESTAMP_FORMAT = '%Y-%m-%dT%H:%M:%S'
 class AccountExists(Exception): pass
 
 class Account(Thing):
+    _cache = g.account_transitionalcache
     _data_int_props = Thing._data_int_props + ('link_karma', 'comment_karma',
                                                'report_made', 'report_correct',
                                                'report_ignored', 'spammer',
@@ -154,6 +153,7 @@ class Account(Thing):
                      admin_takedown_strikes=0,
                      pref_threaded_modmail=False,
                      in_timeout=False,
+                     has_used_mobile_app=False,
                      )
     _preference_attrs = tuple(k for k in _defaults.keys()
                               if k.startswith("pref_"))
@@ -280,16 +280,12 @@ class Account(Thing):
         timer.stop()
 
     def make_cookie(self, timestr=None):
-        if not self._loaded:
-            self._load()
         timestr = timestr or time.strftime(COOKIE_TIMESTAMP_FORMAT)
         id_time = str(self._id) + ',' + timestr
         to_hash = ','.join((id_time, self.password, g.secrets["SECRET"]))
         return id_time + ',' + hashlib.sha1(to_hash).hexdigest()
 
     def make_admin_cookie(self, first_login=None, last_request=None):
-        if not self._loaded:
-            self._load()
         first_login = first_login or datetime.utcnow().strftime(COOKIE_TIMESTAMP_FORMAT)
         last_request = last_request or datetime.utcnow().strftime(COOKIE_TIMESTAMP_FORMAT)
         hashable = ','.join((first_login, last_request, request.ip, request.user_agent, self.password))
@@ -297,9 +293,6 @@ class Account(Thing):
         return ','.join((first_login, last_request, mac))
 
     def make_otp_cookie(self, timestamp=None):
-        if not self._loaded:
-            self._load()
-
         timestamp = timestamp or datetime.utcnow().strftime(COOKIE_TIMESTAMP_FORMAT)
         secrets = [request.user_agent, self.otp_secret, self.password]
         signature = hmac.new(g.secrets["SECRET"], ','.join([timestamp] + secrets), hashlib.sha1).hexdigest()
@@ -619,17 +612,6 @@ class Account(Thing):
             ModAction.create(subreddit, set_by, action='editflair',
                 target=self, details=log_details)
 
-    def update_sr_activity(self, sr):
-        if not self._spam:
-            AccountsActiveBySR.touch(self, sr)
-
-            if c.activity_service and feature.is_enabled("activity_service_write"):
-                try:
-                    c.activity_service.record_activity(
-                        sr._fullname, self._fullname)
-                except Thrift.TException as exc:
-                    g.log.warning("failed to update activity: %s", exc)
-
     def get_trophy_id(self, uid):
         '''Return the ID of the Trophy associated with the given "uid"
 
@@ -859,23 +841,30 @@ def change_password(user, newpassword):
     LastModified.touch(user._fullname, 'Password')
     return True
 
-#TODO reset the cache
-def register(name, password, registration_ip):
-    try:
-        a = Account._by_name(name)
-        raise AccountExists
-    except NotFound:
-        a = Account(name = name,
-                    password = bcrypt_password(password))
-        # new accounts keep the profanity filter settings until opting out
-        a.pref_no_profanity = True
-        a.registration_ip = registration_ip
-        a._commit()
 
-        #clear the caches
-        Account._by_name(name, _update = True)
-        Account._by_name(name, allow_deleted = True, _update = True)
-        return a
+def register(name, password, registration_ip):
+    # get a lock for registering an Account with this name to prevent
+    # simultaneous operations from creating multiple Accounts with the same name
+    with g.make_lock("account_register", "register_%s" % name.lower()):
+        try:
+            account = Account._by_name(name)
+            raise AccountExists
+        except NotFound:
+            account = Account(
+                name=name,
+                password=bcrypt_password(password),
+                # new accounts keep the profanity filter settings until opting out
+                pref_no_profanity=True,
+                registration_ip=registration_ip,
+            )
+            account._commit()
+
+            # update Account._by_name to pick up this new name->Account
+            Account._by_name(name, _update=True)
+            Account._by_name(name, allow_deleted=True, _update=True)
+
+            return account
+
 
 class Friend(Relation(Account, Account)): pass
 
@@ -902,30 +891,6 @@ class DeletedUser(FakeAccount):
             pass
         else:
             object.__setattr__(self, attr, val)
-
-class AccountsActiveBySR(tdb_cassandra.View):
-    _use_db = True
-    _connection_pool = 'main'
-    _ttl = timedelta(minutes=15)
-
-    _extra_schema_creation_args = dict(key_validation_class=ASCII_TYPE)
-
-    _read_consistency_level  = tdb_cassandra.CL.ONE
-    _write_consistency_level = tdb_cassandra.CL.ANY
-
-    @classmethod
-    def touch(cls, account, sr):
-        cls._set_values(sr._id36,
-                        {account._id36: ''})
-
-    @classmethod
-    def get_count(cls, sr, cached=True):
-        return cls.get_count_cached(sr._id36, _update=not cached)
-
-    @classmethod
-    @memoize('accounts_active', time=60)
-    def get_count_cached(cls, sr_id):
-        return cls._cf.get_count(sr_id)
 
 
 class BlockedSubredditsByAccount(tdb_cassandra.DenormalizedRelation):

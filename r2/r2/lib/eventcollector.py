@@ -31,12 +31,17 @@ import random
 import requests
 import time
 
+import httpagentparser
 from pylons import app_globals as g
 from uuid import uuid4
 from wsgiref.handlers import format_date_time
 
 from r2.lib import amqp, hooks
-from r2.lib.geoip import get_request_location
+from r2.lib.language import charset_summary
+from r2.lib.geoip import (
+    get_request_location,
+    location_by_ips,
+)
 from r2.lib.cache_poisoning import cache_headers_valid
 from r2.lib.utils import (
     domain,
@@ -61,6 +66,22 @@ def _epoch_to_millis(timestamp):
 def _datetime_to_millis(dt):
     """Convert a standard datetime to epoch milliseconds."""
     return _epoch_to_millis(epoch_timestamp(dt))
+
+
+def parse_agent(ua):
+    agent_summary = {}
+    parsed = httpagentparser.detect(ua)
+    for attr in ("browser", "os", "platform"):
+        d = parsed.get(attr)
+        if d:
+            for subattr in ("name", "version"):
+                if subattr in d:
+                    key = "%s_%s" % (attr, subattr)
+                    agent_summary[key] = d[subattr]
+
+    agent_summary['bot'] = parsed.get('bot')
+
+    return agent_summary
 
 
 class EventQueue(object):
@@ -118,11 +139,14 @@ class EventQueue(object):
             event.add("auto_self_vote", True)
 
         for name, value in vote.effects.serializable_data.iteritems():
-            # rename the "notes" field to "process_notes" for the event
+            # rename the "notes" field to "details_text" for the event
             if name == "notes":
-                name = "process_notes"
+                name = "details_text"
 
             event.add(name, value)
+
+        # add the note codes separately as "process_notes"
+        event.add("process_notes", ", ".join(vote.effects.note_codes))
 
         event.add_subreddit_fields(vote.thing.subreddit_slow)
         event.add_target_fields(vote.thing)
@@ -154,13 +178,13 @@ class EventQueue(object):
 
         event.add("post_id", new_post._id)
         event.add("post_fullname", new_post._fullname)
-        event.add("post_title", new_post.title)
+        event.add_text("post_title", new_post.title)
 
         event.add("user_neutered", new_post.author_slow._spam)
 
         if new_post.is_self:
             event.add("post_type", "self")
-            event.add("post_body", new_post.selftext)
+            event.add_text("post_body", new_post.selftext)
         else:
             event.add("post_type", "link")
             event.add("post_target_url", new_post.url)
@@ -192,7 +216,7 @@ class EventQueue(object):
         event.add("comment_id", new_comment._id)
         event.add("comment_fullname", new_comment._fullname)
 
-        event.add("comment_body", new_comment.body)
+        event.add_text("comment_body", new_comment.body)
 
         post = Link._byID(new_comment.link_id)
         event.add("post_id", post._id)
@@ -442,7 +466,8 @@ class EventQueue(object):
     @squelch_exceptions
     @sampled("events_collector_report_sample_rate")
     def report_event(self, reason=None, details_text=None,
-            subreddit=None, target=None, request=None, context=None):
+            subreddit=None, target=None, request=None, context=None,
+                     event_type="ss.report"):
         """Create a 'report' event for event-collector.
 
         process_notes: Type of rule (pre-defined report reasons or custom)
@@ -456,7 +481,7 @@ class EventQueue(object):
 
         event = Event(
             topic="report_events",
-            event_type="ss.report",
+            event_type=event_type,
             request=request,
             context=context,
         )
@@ -522,6 +547,148 @@ class EventQueue(object):
 
         self.save_event(event)
 
+    @squelch_exceptions
+    @sampled("events_collector_modmail_sample_rate")
+    def modmail_event(self, message, request=None, context=None):
+        """Create a 'modmail' event for event-collector.
+
+        message: An r2.models.Message object
+        request: pylons.request of the request that created the message
+        context: pylons.tmpl_context of the request that created the message
+
+        """
+
+        from r2.models import Account, Message
+
+        sender = message.author_slow
+        sr = message.subreddit_slow
+        sender_is_moderator = sr.is_moderator_with_perms(sender, "mail")
+
+        if message.first_message:
+            first_message = Message._byID(message.first_message, data=True)
+        else:
+            first_message = message
+
+        event = Event(
+            topic="message_events",
+            event_type="ss.send_message",
+            time=message._date,
+            request=request,
+            context=context,
+            data={
+                # set these manually rather than allowing them to be set from
+                # the request context because the loggedin user might not
+                # be the message sender
+                "user_id": sender._id,
+                "user_name": sender.name,
+            },
+        )
+
+        if sender == Account.system_user():
+            sender_type = "automated"
+        elif sender_is_moderator:
+            sender_type = "moderator"
+        else:
+            sender_type = "user"
+
+        event.add("sender_type", sender_type)
+        event.add("sr_id", sr._id)
+        event.add("sr_name", sr.name)
+        event.add("message_id", message._id)
+        event.add("message_kind", "modmail")
+        event.add("message_fullname", message._fullname)
+
+        event.add_text("message_body", message.body)
+        event.add_text("message_subject", message.subject)
+
+        event.add("first_message_id", first_message._id)
+        event.add("first_message_fullname", first_message._fullname)
+
+        if request and request.POST.get("source", None):
+            source = request.POST["source"]
+            if source in {"compose", "permalink", "modmail", "usermail"}:
+                event.add("page", source)
+
+        if message.sent_via_email:
+            event.add("is_third_party", True)
+            event.add("third_party_metadata", "mailgun")
+
+        if not message.to_id:
+            target = sr
+        else:
+            target = Account._byID(message.to_id, data=True)
+
+        event.add_target_fields(target)
+
+        self.save_event(event)
+
+    @squelch_exceptions
+    @sampled("events_collector_message_sample_rate")
+    def message_event(self, message, event_type="ss.send_message",
+                      request=None, context=None):
+        """Create a 'message' event for event-collector.
+
+        message: An r2.models.Message object
+        request: pylons.request of the request that created the message
+        context: pylons.tmpl_context of the request that created the message
+
+        """
+
+        from r2.models import Account, Message
+
+        sender = message.author_slow
+
+        if message.first_message:
+            first_message = Message._byID(message.first_message, data=True)
+        else:
+            first_message = message
+
+        event = Event(
+            topic="message_events",
+            event_type=event_type,
+            time=message._date,
+            request=request,
+            context=context,
+            data={
+                # set these manually rather than allowing them to be set from
+                # the request context because the loggedin user might not
+                # be the message sender
+                "user_id": sender._id,
+                "user_name": sender.name,
+            },
+        )
+
+        if sender == Account.system_user():
+            sender_type = "automated"
+        else:
+            sender_type = "user"
+
+        event.add("sender_type", sender_type)
+        event.add("message_kind", "message")
+        event.add("message_id", message._id)
+        event.add("message_fullname", message._fullname)
+
+        event.add_text("message_body", message.body)
+        event.add_text("message_subject", message.subject)
+
+        event.add("first_message_id", first_message._id)
+        event.add("first_message_fullname", first_message._fullname)
+
+        if request and request.POST.get("source", None):
+            source = request.POST["source"]
+            if source in {"compose", "permalink", "usermail"}:
+                event.add("page", source)
+
+        if message.sent_via_email:
+            event.add("is_third_party", True)
+            event.add("third_party_metadata", "mailgun")
+
+        target = Account._byID(message.to_id, data=True)
+
+        event.add_target_fields(target)
+
+        self.save_event(event)
+
     def login_event(self, action_name, error_msg,
                     user_name=None, email=None,
                     remember_me=None, newsletter=None, email_verified=None,
@@ -558,6 +725,32 @@ class EventQueue(object):
         event.add('newsletter', newsletter)
         event.add('email_verified', email_verified)
 
+        self.save_event(event)
+
+    def bucketing_event(
+        self, experiment_id, experiment_name, variant, user, loid
+    ):
+        """Send an event recording an experiment bucketing.
+
+        experiment_id: an integer representing the experiment
+        experiment_name: a human-readable name representing the experiment
+        variant: a string representing the variant name
+        user: the Account that has been put into the variant
+        """
+        event = Event(
+            topic='bucketing_events',
+            event_type='bucket',
+        )
+        event.add('experiment_id', experiment_id)
+        event.add('experiment_name', experiment_name)
+        event.add('variant', variant)
+        # if the user is logged out, we won't have a user_id or name
+        if user is not None:
+            event.add('user_id', user._id)
+            event.add('user_name', user.name)
+        if loid:
+            for k, v in loid.to_dict().iteritems():
+                event.add(k, v)
         self.save_event(event)
 
 
@@ -624,6 +817,11 @@ class Event(object):
         else:
             self.payload[field] = value
 
+    def add_text(self, key, value, obfuscate=False):
+        self.add(key, value, obfuscate=obfuscate)
+        for k, v in charset_summary(value).iteritems():
+            self.add("{}_{}".format(key, k), v)
+
     def add_target_fields(self, target):
         if not target:
             return
@@ -655,7 +853,7 @@ class Event(object):
 
         # Add info about the url being linked to for link posts
         if isinstance(target, Link):
-            self.add("target_title", target.title)
+            self.add_text("target_title", target.title)
             if not target.is_self:
                 self.add("target_url", target.url)
                 self.add("target_url_domain", target.link_domain())
@@ -709,10 +907,13 @@ class Event(object):
         oauth2_client = getattr(context, "oauth2_client", None)
         if oauth2_client:
             data["oauth2_client_id"] = oauth2_client._id
+            data["oauth2_client_name"] = oauth2_client.name
+            data["oauth2_client_app_type"] = oauth2_client.app_type
 
         data["geoip_country"] = get_request_location(request, context)
         data["domain"] = request.host
         data["user_agent"] = request.user_agent
+        data["user_agent_parsed"] = parse_agent(request.user_agent)
 
         http_referrer = request.headers.get("Referer", None)
         if http_referrer:
@@ -786,7 +987,6 @@ class PublishableEvent(object):
         original = deserialized_data["payload"][self.truncatable_field]
         truncated = original[:-oversize_by]
         deserialized_data["payload"][self.truncatable_field] = truncated
-
         deserialized_data["payload"]["is_truncated"] = True
 
         self.data = json.dumps(deserialized_data)

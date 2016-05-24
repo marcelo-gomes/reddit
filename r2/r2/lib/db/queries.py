@@ -29,7 +29,7 @@ from r2.lib.db import tdb_cassandra
 from r2.lib.utils import fetch_things2, tup, UniqueIterator
 from r2.lib import utils
 from r2.lib import amqp, filters
-from r2.lib.comment_tree import add_comments, update_comment_votes
+from r2.lib.comment_tree import add_comments
 from r2.lib.voting import prequeued_vote_key
 from r2.models.promo import PROMOTE_STATUS, PromotionLog
 from r2.models.query_cache import (
@@ -731,10 +731,11 @@ def get_user_reported(user_id):
 def set_promote_status(link, promote_status):
     all_queries = [promote_query(link.author_id) for promote_query in 
                    (get_unpaid_links, get_unapproved_links, 
-                    get_rejected_links, get_live_links, get_accepted_links)]
+                    get_rejected_links, get_live_links, get_accepted_links,
+                    get_edited_live_links)]
     all_queries.extend([get_all_unpaid_links(), get_all_unapproved_links(),
                         get_all_rejected_links(), get_all_live_links(),
-                        get_all_accepted_links()])
+                        get_all_accepted_links(), get_all_edited_live_links()])
 
     if promote_status == PROMOTE_STATUS.unpaid:
         inserts = [get_unpaid_links(link.author_id), get_all_unpaid_links()]
@@ -745,6 +746,11 @@ def set_promote_status(link, promote_status):
         inserts = [get_rejected_links(link.author_id), get_all_rejected_links()]
     elif promote_status == PROMOTE_STATUS.promoted:
         inserts = [get_live_links(link.author_id), get_all_live_links()]
+    elif promote_status == PROMOTE_STATUS.edited_live:
+        inserts = [
+            get_edited_live_links(link.author_id),
+            get_all_edited_live_links()
+        ]
     elif promote_status in (PROMOTE_STATUS.accepted, PROMOTE_STATUS.pending,
                             PROMOTE_STATUS.finished):
         inserts = [get_accepted_links(link.author_id), get_all_accepted_links()]
@@ -770,7 +776,8 @@ def _promoted_link_query(user_id, status):
                     'live': PROMOTE_STATUS.promoted,
                     'accepted': (PROMOTE_STATUS.accepted,
                                  PROMOTE_STATUS.pending,
-                                 PROMOTE_STATUS.finished)}
+                                 PROMOTE_STATUS.finished),
+                    'edited_live': PROMOTE_STATUS.edited_live}
 
     q = Link._query(Link.c.sr_id == Subreddit.get_promote_srid(),
                     Link.c._spam == (True, False),
@@ -833,6 +840,16 @@ def get_all_accepted_links():
 
 
 @cached_query(UserQueryCache)
+def get_edited_live_links(user_id):
+    return _promoted_link_query(user_id, 'edited_live')
+
+
+@cached_query(UserQueryCache)
+def get_all_edited_live_links():
+    return _promoted_link_query(None, 'edited_live')
+
+
+@cached_query(UserQueryCache)
 def get_payment_flagged_links():
     return FakeQuery(sort=[desc("_date")])
 
@@ -872,7 +889,7 @@ def unset_underdelivered_campaigns(campaigns):
 def get_promoted_links(user_id):
     queries = [get_unpaid_links(user_id), get_unapproved_links(user_id),
                get_rejected_links(user_id), get_live_links(user_id),
-               get_accepted_links(user_id)]
+               get_accepted_links(user_id), get_edited_live_links(user_id)]
     return queries
 
 
@@ -880,7 +897,7 @@ def get_promoted_links(user_id):
 def get_all_promoted_links():
     queries = [get_all_unpaid_links(), get_all_unapproved_links(),
                get_all_rejected_links(), get_all_live_links(),
-               get_all_accepted_links()]
+               get_all_accepted_links(), get_all_edited_live_links()]
     return queries
 
 
@@ -1024,29 +1041,30 @@ def add_to_commentstree_q(comment):
         amqp.add_item('commentstree_q', comment._fullname)
 
 
-def update_comment_notifications(comment, inbox_rels, mutator):
+def update_comment_notifications(comment, inbox_rels):
     is_visible = not comment._deleted and not comment._spam
 
-    for inbox_rel in tup(inbox_rels):
-        inbox_owner = inbox_rel._thing1
-        unread = (is_visible and
-            getattr(inbox_rel, 'unread_preremoval', True))
+    with CachedQueryMutator() as mutator:
+        for inbox_rel in tup(inbox_rels):
+            inbox_owner = inbox_rel._thing1
+            unread = (is_visible and
+                getattr(inbox_rel, 'unread_preremoval', True))
 
-        if inbox_rel._name == "inbox":
-            query = get_inbox_comments(inbox_owner)
-        elif inbox_rel._name == "selfreply":
-            query = get_inbox_selfreply(inbox_owner)
-        else:
-            raise ValueError("wtf is " + inbox_rel._name)
+            if inbox_rel._name == "inbox":
+                query = get_inbox_comments(inbox_owner)
+            elif inbox_rel._name == "selfreply":
+                query = get_inbox_selfreply(inbox_owner)
+            else:
+                raise ValueError("wtf is " + inbox_rel._name)
 
-        # mentions happen in butler_q
+            # mentions happen in butler_q
 
-        if is_visible:
-            mutator.insert(query, [inbox_rel])
-        else:
-            mutator.delete(query, [inbox_rel])
+            if is_visible:
+                mutator.insert(query, [inbox_rel])
+            else:
+                mutator.delete(query, [inbox_rel])
 
-        set_unread(comment, inbox_owner, unread=unread, mutator=mutator)
+            set_unread(comment, inbox_owner, unread=unread, mutator=mutator)
 
 
 def new_comment(comment, inbox_rels):
@@ -1057,34 +1075,30 @@ def new_comment(comment, inbox_rels):
 
     sr = Subreddit._byID(comment.sr_id)
 
-    with CachedQueryMutator() as m:
-        if comment._deleted:
-            job_key = "delete_items"
-            job.append(get_sr_comments(sr))
-            job.append(get_all_comments())
-        else:
-            job_key = "insert_items"
-            if comment._spam:
+    if comment._deleted:
+        job_key = "delete_items"
+        job.append(get_sr_comments(sr))
+        job.append(get_all_comments())
+    else:
+        job_key = "insert_items"
+        if comment._spam:
+            with CachedQueryMutator() as m:
                 m.insert(get_spam_comments(sr), [comment])
-            if (was_spam_filtered(comment) and
-                    not (sr.exclude_banned_modqueue and author._spam)):
-                m.insert(get_spam_filtered_comments(sr), [comment])
+                if (was_spam_filtered(comment) and
+                        not (sr.exclude_banned_modqueue and author._spam)):
+                    m.insert(get_spam_filtered_comments(sr), [comment])
 
-            amqp.add_item('new_comment', comment._fullname)
-            add_to_commentstree_q(comment)
+        amqp.add_item('new_comment', comment._fullname)
+        add_to_commentstree_q(comment)
 
-        job_dict = { job_key: comment }
-        add_queries(job, **job_dict)
+    job_dict = { job_key: comment }
+    add_queries(job, **job_dict)
 
-        # note that get_all_comments() is updated by the amqp process
-        # r2.lib.db.queries.run_new_comments (to minimise lock contention)
+    # note that get_all_comments() is updated by the amqp process
+    # r2.lib.db.queries.run_new_comments (to minimise lock contention)
 
-        if inbox_rels:
-            update_comment_notifications(comment, inbox_rels, mutator=m)
-
-
-def delete_comment(comment):
-    add_to_commentstree_q(comment)
+    if inbox_rels:
+        update_comment_notifications(comment, inbox_rels)
 
 
 def new_subreddit(sr):
@@ -1121,7 +1135,14 @@ def new_vote(vote):
                     for sort in sorts_to_update:
                         results.append(get_domain_links(domain, sort, "all"))
         elif isinstance(vote.thing, Comment):
-            update_comment_votes([vote.thing])
+            comment = vote.thing
+
+            # update the score periodically when a comment has many votes
+            update_threshold = g.live_config['comment_vote_update_threshold']
+            update_period = g.live_config['comment_vote_update_period']
+            num_votes = comment.num_votes
+            if num_votes <= update_threshold or num_votes % update_period == 0:
+                add_to_commentstree_q(comment)
 
         add_queries(results, insert_items=vote.thing)
     
@@ -1340,8 +1361,7 @@ def notification_handler(thing, notify_function,
 
         replies = list(replies)
         if replies:
-            with CachedQueryMutator() as m:
-                update_comment_notifications(thing, replies, mutator=m)
+            update_comment_notifications(thing, replies)
     else:
         raise ValueError(error_message)
 
@@ -1717,7 +1737,7 @@ def run_new_comments(limit=1000):
 
     amqp.handle_items('newcomments_q', _run_new_comments, limit=limit)
 
-def run_commentstree(qname="commentstree_q", limit=100):
+def run_commentstree(qname="commentstree_q", limit=400):
     """Add new incoming comments to their respective comments trees"""
 
     @g.stats.amqp_processor(qname)

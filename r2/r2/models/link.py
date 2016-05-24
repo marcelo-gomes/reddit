@@ -138,12 +138,13 @@ class Link(Thing, Printable):
                      mobile_ad_url="",
                      admin_takedown=False,
                      removed_link_child=None,
+                     precomputed_sorts=None,
                      )
     _essentials = ('sr_id', 'author_id')
     _nsfw = re.compile(r"\bnsf[wl]\b", re.I)
 
     SELFTEXT_MAX_LENGTH = 40000
-    
+
     is_votable = True
 
     def __init__(self, *a, **kw):
@@ -336,7 +337,7 @@ class Link(Thing, Printable):
     def _unhide(self, user):
         LinkHidesByAccount._unhide(user, self)
 
-    def _commit(self, *a, **kw):
+    def _commit(self):
         # If we've updated the (denormalized) preview object, we also need to
         # update the metadata that keeps track of the denormalizations.
         if 'preview_object' in self._dirties:
@@ -345,7 +346,7 @@ class Link(Thing, Printable):
                 LinksByImage.remove_link(old_val['uid'], self)
             if val:
                 LinksByImage.add_link(val['uid'], self)
-        Thing._commit(self, *a, **kw)
+        Thing._commit(self)
 
     def link_domain(self):
         if self.is_self:
@@ -363,23 +364,30 @@ class Link(Thing, Printable):
         if not c.user_is_admin and self._deleted:
             return False
 
-        if not (c.user_is_admin or (isinstance(c.site, DomainSR) and
-                                    wrapped.subreddit.is_moderator(user))):
+        is_mod = wrapped.subreddit.is_moderator(user)
+
+        if not (c.user_is_admin or (isinstance(c.site, DomainSR) and is_mod)):
             if self._spam and (not user or
                                (user and self.author_id != user._id)):
                 return False
 
-            #author_karma = wrapped.author.link_karma
-            #if author_karma <= 0 and random.randint(author_karma, 0) != 0:
-                #return False
+        if not (c.user_is_admin or is_mod) and wrapped.enemy:
+            return False
 
         if user and not c.ignore_hide_rules:
             if wrapped.hidden:
                 return False
 
-            # never automatically hide user's own posts or stickies
-            allow_auto_hide = (not wrapped.stickied and
-                               self.author_id != user._id)
+            # determine if the post can be auto-hidden due to voting/score
+            if self.author_id == user._id:
+                # not if it's the user's own post
+                allow_auto_hide = False
+            elif wrapped.stickied and not wrapped.different_sr:
+                # not if it's stickied and we're inside the subreddit
+                allow_auto_hide = False
+            else:
+                allow_auto_hide = True
+
             if (allow_auto_hide and
                     ((user.pref_hide_ups and wrapped.likes == True) or
                      (user.pref_hide_downs and wrapped.likes == False) or
@@ -590,8 +598,6 @@ class Link(Thing, Printable):
         else:
             is_moderator_srids = set()
 
-        sticky_fullnames = site.get_sticky_fullnames()
-
         # set the nofollow state where needed
         cls.update_nofollow(user, wrapped)
 
@@ -766,8 +772,12 @@ class Link(Thing, Printable):
             # is this link a member of a different (non-c.site) subreddit?
             item.different_sr = (isinstance(site, FakeSubreddit) or
                                  site.name != item.subreddit.name)
-            item.stickied = (not item.different_sr and
-                item._fullname in sticky_fullnames)
+
+            item.stickied = item._fullname in item.subreddit.get_sticky_fullnames()
+
+            # we only want to style a sticky specially if we're inside the
+            # subreddit that it's stickied in (not in places like front page)
+            item.use_sticky_style = item.stickied and not item.different_sr
 
             item.subreddit_path = item.subreddit.path
             item.domain_path = "/domain/%s/" % item.domain
@@ -867,6 +877,9 @@ class Link(Thing, Printable):
                                     for y in xrange(len(parts))}
                         if subparts.intersection(banned_domains):
                             item.link_notes.append('banned domain')
+
+            # This is passed in promotedlink.html
+            item.ads_auction_enabled = feature.is_enabled('ads_auction')
 
         if user_is_loggedin:
             incr_counts(wrapped)
@@ -1170,18 +1183,22 @@ class PromotedLink(Link):
     @classmethod
     def add_props(cls, user, wrapped):
         Link.add_props(user, wrapped)
-        user_is_sponsor = c.user_is_sponsor
 
-        status_dict = dict((v, k) for k, v in PROMOTE_STATUS.iteritems())
         for item in wrapped:
-            # these are potentially paid for placement
             item.nofollow = True
-            item.user_is_sponsor = user_is_sponsor
-            status = getattr(item, "promote_status", -1)
-            if item.is_author or c.user_is_sponsor:
-                item.rowstyle_cls = "link " + PROMOTE_STATUS.name[status].lower()
-            else:
-                item.rowstyle_cls = "link promoted"
+            item.user_is_sponsor = c.user_is_sponsor
+
+            status = "promoted"
+
+            # change the status class if the viewer is the author or a sponsor
+            if item.is_author or item.user_is_sponsor:
+                try:
+                    status = PROMOTE_STATUS.name[item.promote_status]
+                except (AttributeError, IndexError):
+                    pass
+
+            item.rowstyle_cls = "link %s" % status
+
         # Run this last
         Printable.add_props(user, wrapped)
 
@@ -1370,8 +1387,6 @@ class Comment(Thing, Printable):
         """return's a comments's subreddit. in most case the subreddit is already
         on the wrapped link (as .subreddit), and that should be used
         when possible. if sr_id does not exist, then use the parent link's"""
-        self._safe_load()
-
         if hasattr(self, 'sr_id'):
             sr_id = self.sr_id
         else:
@@ -1405,10 +1420,28 @@ class Comment(Thing, Printable):
         return True
 
     def keep_item(self, wrapped):
+        if c.user_is_admin:
+            return True
+
+        if c.user_is_loggedin:
+            if wrapped.subreddit.is_moderator(c.user):
+                return True
+            if wrapped.author_id == c.user._id:
+                return True
+            if wrapped.author_id in c.user.enemies:
+                return False
+
         return True
 
-    cache_ignore = set(["subreddit", "link", "to", "num_children"]
-                       ).union(Printable.cache_ignore)
+    cache_ignore = set((
+        "subreddit",
+        "link",
+        "to",
+        "num_children",
+        "depth",
+        "child_ids",
+    )).union(Printable.cache_ignore)
+
     @staticmethod
     def wrapped_cache_key(wrapped, style):
         s = Printable.wrapped_cache_key(wrapped, style)
@@ -1721,7 +1754,7 @@ class Comment(Thing, Printable):
 
             # always use the default collapse threshold in contest mode threads
             # if the user has a custom collapse threshold
-            if (item.link.contest_mode and 
+            if (item.link.contest_mode and
                     user.pref_min_comment_score is not None):
                 min_score = Account._defaults['pref_min_comment_score']
             else:
@@ -1729,12 +1762,12 @@ class Comment(Thing, Printable):
 
             item.collapsed = False
             distinguished = item.distinguished and item.distinguished != "no"
-            item.prevent_collapse = profilepage or user_is_admin or distinguished
+            prevent_collapse = profilepage or user_is_admin or distinguished
 
             if (item.deleted and item.subreddit.collapse_deleted_comments and
-                    not item.prevent_collapse):
+                    not prevent_collapse):
                 item.collapsed = True
-            elif item.score < min_score and not item.prevent_collapse:
+            elif item.score < min_score and not prevent_collapse:
                 item.collapsed = True
                 item.collapsed_reason = _("comment score below threshold")
             elif user_is_loggedin and item.author_id in c.user.enemies:
@@ -1758,7 +1791,7 @@ class Comment(Thing, Printable):
             item.is_author = (user == item.author)
             item.is_focal = (focal_comment == item._id36)
 
-            item.votable = not item.archived
+            item.votable = item._age < item.subreddit.archive_age
 
             hide_period = ('{0} minutes'
                           .format(item.subreddit.comment_score_hide_mins))
@@ -1961,6 +1994,9 @@ class Message(Thing, Printable):
                      from_sr=False,
                      display_author=None,
                      display_to=None,
+                     email_id=None,
+                     sent_via_email=False,
+                     del_on_recipient=False,
                      )
     _data_int_props = Thing._data_int_props + ('reported',)
     _essentials = ('author_id',)
@@ -1968,11 +2004,14 @@ class Message(Thing, Printable):
 
     @classmethod
     def _new(cls, author, to, subject, body, ip, parent=None, sr=None,
-             from_sr=False):
+             from_sr=False, can_send_email=True, sent_via_email=False,
+             email_id=None):
         from r2.lib.emailer import message_notification_email
+        from r2.lib.message_to_email import queue_modmail_email
 
         m = Message(subject=subject, body=body, author_id=author._id, new=True,
-                    ip=ip, from_sr=from_sr)
+                    ip=ip, from_sr=from_sr, sent_via_email=sent_via_email,
+                    email_id=email_id)
         m._spam = author._spam
 
         if author._spam:
@@ -1997,8 +2036,12 @@ class Message(Thing, Printable):
                 m.first_message = parent.first_message
             else:
                 m.first_message = parent._id
+
             if parent.sr_id:
                 sr_id = parent.sr_id
+
+            if parent.display_author and not getattr(parent, "signed", False):
+                m.display_to = parent.display_author
 
         if not to and not sr_id:
             raise CreationError("Message created with neither to nor sr_id")
@@ -2040,6 +2083,10 @@ class Message(Thing, Printable):
                 m.distinguished = 'yes'
                 m._commit()
 
+            if (can_send_email and
+                    sr.name in g.live_config['modmail_forwarding_email']):
+                queue_modmail_email(m)
+
         if author.name in g.admins:
             m.distinguished = 'admin'
             m._commit()
@@ -2049,15 +2096,13 @@ class Message(Thing, Printable):
         if not skip_inbox and to and (not m._spam or to.name in g.admins):
             # if "to" is not a sr moderator they need to be notified
             if not sr_id or not sr.is_moderator(to):
-                # Record the inbox relation, but don't give the user
-                # an orangered, if they PM themselves.
-                # Don't notify on PMs from blocked users, either
-                orangered = (to.name != author.name and
-                             author._id not in to.enemies)
-                inbox_rel.append(Inbox._add(to, m, 'inbox',
-                                            orangered=orangered))
+                inbox_rel.append(Inbox._add(to, m, 'inbox'))
 
-                if orangered and to.pref_email_messages:
+                if (
+                    to.pref_email_messages and
+                    m.author_id not in to.enemies and
+                    to._id != m.author_id
+                ):
                     from r2.lib.template_helpers import get_domain
                     if from_sr:
                         sender_name = '/r/%s' % sr.name
@@ -2098,6 +2143,11 @@ class Message(Thing, Printable):
                         not first_recipient_modmail):
                     inbox_rel.append(Inbox._add(first_recipient, m, 'inbox'))
 
+        if sr_id:
+            g.events.modmail_event(m, request=request, context=c)
+        else:
+            g.events.message_event(m, request=request, context=c)
+
         return (m, inbox_rel)
 
     @property
@@ -2119,20 +2169,39 @@ class Message(Thing, Printable):
 
     def can_view_slow(self):
         if c.user_is_loggedin:
-            # simple case from before:
             if (c.user_is_admin or
-                c.user._id in (self.author_id, self.to_id)):
+                    c.user._id in (self.author_id, self.to_id)):
                 return True
             elif self.sr_id:
-                sr = Subreddit._byID(self.sr_id)
-                is_moderator = sr.is_moderator_with_perms(c.user, 'mail')
-                # moderators can view messages on subreddits they moderate
-                if is_moderator:
+                sr = Subreddit._byID(self.sr_id, data=True, stale=True)
+
+                if sr.is_moderator_with_perms(c.user, 'mail'):
                     return True
                 elif self.first_message:
-                    first = Message._byID(self.first_message, True)
-                    return (first.author_id == c.user._id)
+                    first = Message._byID(self.first_message, data=True)
+                    return c.user._id in (first.author_id, first.to_id)
 
+    def get_muted_user_in_conversation(self):
+        """Return the muted user involved in a modmail conversation (if any)."""
+        if not self.sr_id:
+            return None
+
+        sr = self.subreddit_slow
+
+        if self.first_message:
+            first = Message._byID(self.first_message, data=True)
+        else:
+            first = self
+
+        first_author = first.author_slow
+        first_recipient = first.recipient_slow if first.to_id else None
+
+        if sr.is_muted(first_author):
+            return first_author
+        elif first_recipient and sr.is_muted(first_recipient):
+            return first_recipient
+        else:
+            return None
 
     @classmethod
     def add_props(cls, user, wrapped):
@@ -2276,7 +2345,12 @@ class Message(Thing, Printable):
                     else:
                         subreddit_distinguish = None
 
-                    if not item.user_is_moderator and not c.user_is_admin:
+                    if item.sent_via_email:
+                        item.hide_author = True
+                        item.distinguished = "yes"
+                        item.taglinetext = _(
+                            "subreddit message via %(subreddit)s sent %(when)s")
+                    elif not item.user_is_moderator and not c.user_is_admin:
                         item.author = item.subreddit
                         item.hide_author = True
                         item.taglinetext = _(
@@ -2398,7 +2472,13 @@ class Message(Thing, Printable):
         return s
 
     def keep_item(self, wrapped):
-        return True
+        if c.user_is_admin:
+            return True
+        # do not keep message which were deleted on recipient
+        if (isinstance(self, Message) and
+                self.to_id == c.user._id and self.del_on_recipient):
+            return False
+        return not wrapped.enemy
 
 
 class _SaveHideByAccount(tdb_cassandra.DenormalizedRelation):
@@ -2449,7 +2529,7 @@ class _ThingSavesByAccount(_SaveHideByAccount):
     @classmethod
     def value_for(cls, thing1, thing2, category=None):
         return category or ''
-    
+
     @classmethod
     def _remove_from_category_listings(cls, user, things, category):
         things = tup(things)
@@ -2618,7 +2698,7 @@ class _ThingSavesByCategory(_ThingSavesBySubreddit):
 
     @classmethod
     def _get_query_fn():
-        raise NotImplementedError 
+        raise NotImplementedError
 
     @classmethod
     def _check_empty(cls, user, category):
@@ -2719,18 +2799,31 @@ class LinksByImage(tdb_cassandra.View):
         return columns.iterkeys()
 
 
-class Inbox(MultiRelation('inbox',
-                          Relation(Account, Comment),
-                          Relation(Account, Message))):
+_AccountCommentInbox = Relation(Account, Comment)
+_AccountMessageInbox = Relation(Account, Message)
+
+
+for rel_cls in (_AccountCommentInbox, _AccountMessageInbox):
+    rel_cls._defaults = {
+        "new": False,
+    }
+
+
+class Inbox(MultiRelation('inbox', _AccountCommentInbox, _AccountMessageInbox)):
     @classmethod
     def _add(cls, to, obj, *a, **kw):
         orangered = kw.pop("orangered", True)
+
+        # don't orangered (ever!) for enemies
+        if obj.author_id in to.enemies:
+            orangered = False
+        # don't get an orangered for messaging yourself.
+        elif to._id == obj.author_id:
+            orangered = False
+
         i = Inbox(to, obj, *a, **kw)
         i.new = True
         i._commit()
-
-        if not to._loaded:
-            to._load()
 
         if orangered:
             to._incr('inbox_count', 1)
@@ -2823,10 +2916,6 @@ class ModeratorInbox(Relation(Subreddit, Message)):
         i = ModeratorInbox(sr, obj, *a, **kw)
         i.new = True
         i._commit()
-
-        if not sr._loaded:
-            sr._load()
-
         return i
 
     @classmethod

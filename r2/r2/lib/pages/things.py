@@ -176,6 +176,7 @@ class LinkButtons(PrintableButtons):
                                   mod_reports=thing.mod_reports,
                                   user_reports=thing.user_reports,
                                   show_distinguish = show_distinguish,
+                                  distinguished=thing.distinguished,
                                   show_lock = show_lock,
                                   show_unlock = show_unlock,
                                   show_marknsfw = show_marknsfw,
@@ -256,6 +257,7 @@ class CommentButtons(PrintableButtons):
                                   mod_reports=thing.mod_reports,
                                   user_reports=thing.user_reports,
                                   show_distinguish = show_distinguish,
+                                  distinguished=thing.distinguished,
                                   show_sticky_comment=show_sticky_comment,
                                   show_delete = show_delete,
                                   show_givegold=show_givegold,
@@ -277,6 +279,8 @@ class MessageButtons(PrintableButtons):
         can_block = True
         can_mute = False
         is_admin_message = False
+        del_on_recipient = (isinstance(thing, Message) and
+                            thing.del_on_recipient)
 
         if not was_comment:
             first_message = thing
@@ -320,6 +324,7 @@ class MessageButtons(PrintableButtons):
                                   can_block = can_block,
                                   can_mute = can_mute,
                                   is_admin_message = is_admin_message,
+                                  del_on_recipient=del_on_recipient,
                                  )
 
 

@@ -525,6 +525,7 @@ class IdentityJsonTemplate(ThingJsonTemplate):
         gold_expiration="gold_expiration",
         is_suspended="in_timeout",
         suspension_expiration_utc="timeout_expiration_utc",
+        features="features",
     )
     _public_attrs = {
         "name",
@@ -552,6 +553,13 @@ class IdentityJsonTemplate(ThingJsonTemplate):
             # No access to privatemessages, but the rest of
             # the identity information is sufficient.
             pass
+
+        # Add as private data attributes states about this user. This is used
+        # for feature flagging by user state on first-party API clients.
+        if c.user_is_loggedin and thing._id == c.user._id:
+            data['is_employee'] = thing.employee
+            data['in_beta'] = thing.pref_beta
+
         return data
 
     @extra_oauth2_scope("privatemessages")
@@ -584,6 +592,8 @@ class IdentityJsonTemplate(ThingJsonTemplate):
                 return None
 
             return calendar.timegm(expiration_date.utctimetuple())
+        elif attr == "features":
+            return feature.all_enabled(c.user)
 
         return ThingJsonTemplate.thing_attr(self, thing, attr)
 
@@ -730,6 +740,10 @@ class LinkJsonTemplate(ThingJsonTemplate):
         source_height = preview_object['height']
         source_ratio = float(source_height) / source_width
 
+        # previews with a ratio above the max will be cropped to a lower ratio
+        max_ratio = float(LinkJsonTemplate.PREVIEW_MAX_RATIO)
+        preview_ratio = min(source_ratio, max_ratio)
+
         preview_resolutions = []
         for w in LinkJsonTemplate.PREVIEW_RESOLUTIONS:
             if w > source_width:
@@ -738,7 +752,7 @@ class LinkJsonTemplate(ThingJsonTemplate):
             url = g.image_resizing_provider.resize_image(
                 preview_object, w, censor_nsfw,
                 LinkJsonTemplate.PREVIEW_MAX_RATIO)
-            h = int(w * source_ratio)
+            h = int(w * preview_ratio)
             preview_resolutions.append({
                 "url": url,
                 "width": w,
@@ -1433,9 +1447,9 @@ class SubredditSettingsTemplate(ThingJsonTemplate):
     def thing_attr(self, thing, attr):
         if attr.startswith('site.') and thing.site:
             return getattr(thing.site, attr[5:])
-        if attr == 'related_subreddits':
+        if attr == 'related_subreddits' and thing.site:
             # string used for form input
-            return '\n'.join(thing.related_subreddits)
+            return '\n'.join(thing.site.related_subreddits)
         return ThingJsonTemplate.thing_attr(self, thing, attr)
 
     def raw_data(self, thing):

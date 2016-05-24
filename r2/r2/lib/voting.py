@@ -32,6 +32,7 @@ from r2.models import Account, Thing
 from r2.models.last_modified import LastModified
 from r2.models.vote import Vote, VotesByAccount
 
+from r2.lib.geoip import organization_by_ips
 
 def prequeued_vote_key(user, item):
     return 'registered_vote_%s_%s' % (user._id, item._fullname)
@@ -62,6 +63,8 @@ def cast_vote(user, thing, direction, **data):
     }
 
     data['ip'] = getattr(request, "ip", None)
+    if data['ip'] is not None:
+        data['org'] = organization_by_ips(data['ip'])
     vote_data['data'] = data
 
     hooks.get_hook("vote.get_vote_data").call(
@@ -95,6 +98,14 @@ def consume_vote_queue(queue):
 		# a thing is a database object
 		# it's a link, comment, post, whatever, everything can be upvoted/downvoted
         vote_data = json.loads(msg.body)
+        hook = hooks.get_hook('vote.validate_vote_data')
+        if hook.call_until_return(msg=msg, vote_data=vote_data) is False:
+            # Corrupt records in the queue. Ignore them.
+            print "Ignoring invalid vote by %s on %s %s" % (
+                    vote_data.get('user_id', '<unknown>'),
+                    vote_data.get('thing_fullname', '<unknown>'),
+                    vote_data)
+            return
 
 		# this gets the user from database/cache (either memcached or postgres, whatever)
         user = Account._byID(vote_data.pop("user_id"), data=True)
@@ -121,7 +132,7 @@ def consume_vote_queue(queue):
                 )
             except TypeError as e:
                 # a vote on an invalid type got in the queue, just skip it
-                g.log.error(e.message)
+                g.log.exception("Invalid type: %r", e.message)
                 return
 
             timer.intermediate("create_vote_obj")

@@ -546,6 +546,9 @@ class OAuth2Client(Token):
     def is_confidential(self):
         return self.app_type not in self.PUBLIC_APP_TYPES
 
+    def is_first_party(self):
+        return self.has_developer(Account.system_user())
+
 
 class OAuth2ClientsByDeveloper(tdb_cassandra.View):
     """Index providing access to the list of OAuth2Clients of which an Account is a developer."""
@@ -623,9 +626,12 @@ class OAuth2AccessToken(Token):
         return OAuth2AccessTokensByUser
 
     def _on_create(self):
-        """Updates the by-user view upon creation."""
+        hooks.get_hook("oauth2.create_token").call(token=self)
+
+        # update the by-user view
         if self.user_id:
             self._by_user_view()._set_values(str(self.user_id), {self._id: ''})
+
         return super(OAuth2AccessToken, self)._on_create()
 
     def check_valid(self):
@@ -640,6 +646,9 @@ class OAuth2AccessToken(Token):
             client = OAuth2Client._byID(self.client_id)
             if getattr(client, 'deleted', False):
                 raise NotFound
+        except AttributeError:
+            g.log.error("bad token %s: %s", self, self._t)
+            raise
         except NotFound:
             return False
 
@@ -706,6 +715,13 @@ class OAuth2RefreshToken(OAuth2AccessToken):
 
     _type_prefix = None
     _ttl = None
+
+    def _on_create(self):
+        if self.user_id:
+            self._by_user_view()._set_values(str(self.user_id), {self._id: ''})
+
+        # skip OAuth2AccessToken._on_create to avoid "oauth2.create_token" hook
+        return Token._on_create(self)
 
     @classmethod
     def _by_user_view(cls):

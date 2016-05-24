@@ -697,10 +697,14 @@ class VSubredditName(VRequired):
     def run(self, name):
         if name:
             name = sr_path_rx.sub('\g<name>', name.strip())
+
         valid_name = Subreddit.is_valid_name(
             name, allow_language_srs=self.allow_language_srs)
+
         if not valid_name:
             self.set_error(self._error, code=400)
+            return
+
         return str(name)
 
     def param_docs(self):
@@ -941,7 +945,6 @@ class VByNameIfAuthor(VByName):
     def run(self, fullname):
         thing = VByName.run(self, fullname)
         if thing:
-            if not thing._loaded: thing._load()
             if c.user_is_loggedin and thing.author_id == c.user._id:
                 return thing
         return self.set_error(errors.NOT_AUTHOR)
@@ -1635,13 +1638,21 @@ class VThrottledLogin(VRequired):
         self.seconds = None
 
     def get_ratelimits(self, account):
-        if config["r2.import_private"]:
-            from r2admin.lib.ip_events import ip_used_by_account
-        else:
-            def ip_used_by_account(account_id, ip):
-                return False
+        is_previously_seen_ip = request.ip in [
+            j for i in IPsByAccount.get(account._id, column_count=1000)
+            for j in i.itervalues()
+        ]
 
-        is_previously_seen_ip = ip_used_by_account(account._id, request.ip)
+        # We want to maintain different rate-limit buckets depending on whether
+        # we have seen the IP logging in before.  If someone is trying to brute
+        # force an account from an unfamiliar location, we will rate limit
+        # *all* requests from unfamiliar locations that try to access the
+        # account, while still maintaining a separate rate-limit for IP
+        # addresses we have seen use the account before.
+        #
+        # Finally, we also rate limit IPs themselves that appear to be trying
+        # to log into accounts they have never logged into before.  This goes
+        # into a separately maintained bucket.
         if is_previously_seen_ip:
             ratelimits = {
                 LoginRatelimit("familiar", account._id): g.RL_LOGIN_MAX_REQS,
@@ -2313,27 +2324,33 @@ class VList(Validator):
 
 
 class VFrequencyCap(Validator):
-    def run(self, frequency_capped='false', frequency_cap=None,
-            frequency_cap_duration=None):
+    def run(self, frequency_capped='false', frequency_cap=None):
 
         if frequency_capped == 'true':
-            if frequency_cap and frequency_cap_duration:
+            if frequency_cap and int(frequency_cap) >= g.frequency_cap_min:
                 try:
-                    return (int(frequency_cap), int(frequency_cap_duration),)
+                    return frequency_cap
                 except (ValueError, TypeError):
                     self.set_error(errors.INVALID_FREQUENCY_CAP, code=400)
             else:
-                self.set_error(errors.INVALID_FREQUENCY_CAP, code=400)
+                self.set_error(
+                    errors.FREQUENCY_CAP_TOO_LOW,
+                    {'min': g.frequency_cap_min},
+                    code=400
+                )
         else:
-            return (None, None)
+            return None
 
 
 class VPriority(Validator):
     def run(self, val):
         if c.user_is_sponsor:
-            return PROMOTE_PRIORITIES.get(val, PROMOTE_DEFAULT_PRIORITY)
+            return (PROMOTE_PRIORITIES.get(val,
+                PROMOTE_DEFAULT_PRIORITY(context=c)))
+        elif feature.is_enabled('ads_auction'):
+            return PROMOTE_DEFAULT_PRIORITY(context=c)
         else:
-            return PROMOTE_DEFAULT_PRIORITY
+            return PROMOTE_PRIORITIES['standard']
 
 
 class VLocation(Validator):
@@ -2348,14 +2365,31 @@ class VLocation(Validator):
         if not (country or region or metro):
             return None
 
+        # Sponsors should only be creating fixed-CPM campaigns, which we
+        # cannot calculate region specific inventory for
+        if c.user_is_sponsor and region and not (region and metro):
+            invalid_region = True
+        else:
+            invalid_region = False
+
+        # Non-sponsors can only create auctions (non-inventory), so they
+        # can target country, country/region, and country/region/metro
         if not (country and not (region or metro) or
+                (country and region and not metro) or
                 (country and region and metro)):
-            # can target just country or country, region, and metro
-            self.set_error(errors.INVALID_LOCATION, code=400)
-        elif (country not in g.locations or
-              region and region not in g.locations[country]['regions'] or
-              metro and metro not in g.locations[country]['regions'][region]['metros']):
-            self.set_error(errors.INVALID_LOCATION, code=400)
+            invalid_geotargets = True
+        else:
+            invalid_geotargets = False
+
+        if (country not in g.locations or
+                region and region not in g.locations[country]['regions'] or
+                metro and metro not in g.locations[country]['regions'][region]['metros']):
+            nonexistent_geotarget = True
+        else:
+            nonexistent_geotarget = False
+
+        if invalid_region or invalid_geotargets or nonexistent_geotarget:
+            self.set_error(errors.INVALID_LOCATION, code=400, field='location')
         else:
             return Location(country, region, metro)
 

@@ -22,6 +22,11 @@
 ###############################################################################
 set -e
 
+if [[ $EUID -ne 0 ]]; then
+    echo "ERROR: Must be run with root privileges."
+    exit 1
+fi
+
 # load configuration
 RUNDIR=$(dirname $0)
 SCRIPTDIR="$RUNDIR/install"
@@ -29,7 +34,6 @@ SCRIPTDIR="$RUNDIR/install"
 # the canonical source of all installers
 GITREPO="https://raw.github.com/reddit/reddit/master/install"
 NEEDED=(
-    "install.cfg"
     "done.sh"
     "install_apt.sh"
     "install_cassandra.sh"
@@ -49,6 +53,12 @@ for item in ${NEEDED[*]}; do
         break
     fi
 done
+
+if [ ! -e $SCRIPTDIR/install.cfg ]; then
+    NEEDED+=("install.cfg")
+    MISSING="1"
+fi
+
 
 function important() {
     echo -e "\033[31m${1}\033[0m"
@@ -91,6 +101,6 @@ important "but the easiest thing is probably editing /etc/hosts on the host mach
 echo
 read -er -n1 -p "proceed? [Y/n]" response
 if [[ $response =~ ^[Yy]$ || $response == "" ]]; then
-    echo "Excellent. Here we go.  We're going to need sudo for this one:"
-    sudo $SCRIPTDIR/reddit.sh
+    echo "Excellent. Here we go!"
+    $SCRIPTDIR/reddit.sh
 fi

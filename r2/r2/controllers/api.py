@@ -19,6 +19,12 @@
 # All portions of the code written by reddit are Copyright (c) 2006-2015 reddit
 # Inc. All Rights Reserved.
 ###############################################################################
+import csv
+from collections import defaultdict
+import hashlib
+import re
+import urllib
+import urllib2
 
 from r2.controllers.reddit_base import (
     abort_with_error,
@@ -111,24 +117,20 @@ from r2.controllers.oauth2 import require_oauth2_scope, allow_oauth2_access
 from r2.lib.template_helpers import add_sr, get_domain, make_url_protocol_relative
 from r2.lib.system_messages import notify_user_added, send_ban_message
 from r2.controllers.ipn import generate_blob, update_blob
+from r2.controllers.login import handle_login, handle_register
 from r2.lib.lock import TimeoutExpired
 from r2.lib.csrf import csrf_exempt
 from r2.lib.voting import cast_vote
 
 from r2.models import wiki
+from r2.models.ip import set_account_ip
 from r2.models.recommend import AccountSRFeedback, FEEDBACK_ACTIONS
 from r2.models.rules import SubredditRules
 from r2.models.vote import Vote
 from r2.lib.merge import ConflictException
 
-import csv
-from collections import defaultdict
 from datetime import datetime, timedelta
 from urlparse import urlparse
-import hashlib
-import re
-import urllib
-import urllib2
 
 
 class ApiminimalController(MinimalController):
@@ -229,9 +231,11 @@ class ApiController(RedditController):
 
         """
         if c.user_is_loggedin:
-            return Wrapped(c.user).render()
+            user_data = Wrapped(c.user).render()
+            user_data['data'].update({'features': feature.all_enabled(c.user)})
+            return user_data
         else:
-            return {}
+            return {'data': {'features': feature.all_enabled(None)}}
 
     @json_validate(user=VUname(("user",)))
     @api_doc(api_section.users)
@@ -607,45 +611,14 @@ class ApiController(RedditController):
             responder._send_data(cookie  = user.make_cookie())
         responder._send_data(need_https=feature.is_enabled("force_https"))
 
-    @validatedForm(VLoggedOut(),
-                   user = VThrottledLogin(['user', 'passwd']),
-                   rem = VBoolean('rem'))
-    def _handle_login(self, form, responder, user, rem):
-        def _event(error):
-            g.events.login_event(
-                'login_attempt',
-                error_msg=error,
-                user_name=request.urlvars.get('url_user'),
-                remember_me=rem,
-                request=request,
-                context=c)
-
-        exempt_ua = (request.user_agent and
-                     any(ua in request.user_agent for ua
-                         in g.config.get('exempt_login_user_agents', ())))
-        if (errors.LOGGED_IN, None) in c.errors:
-            if user == c.user or exempt_ua:
-                # Allow funky clients to re-login as the current user.
-                c.errors.remove((errors.LOGGED_IN, None))
-            else:
-                from r2.lib.base import abort
-                from r2.lib.errors import reddit_http_error
-                _event(error='LOGGED_IN')
-                abort(reddit_http_error(409, errors.LOGGED_IN))
-
-        if responder.has_errors("ratelimit", errors.RATELIMIT):
-            _event(error='RATELIMIT')
-
-        elif responder.has_errors("passwd", errors.WRONG_PASSWORD):
-            _event(error='WRONG_PASSWORD')
-
-        else:
-            self._login(responder, user, rem)
-            _event(error=None)
-
     @csrf_exempt
     @cross_domain(allow_credentials=True)
-    def POST_login(self, *args, **kwargs):
+    @validatedForm(
+        VLoggedOut(),
+        user=VThrottledLogin(['user', 'passwd']),
+        rem=VBoolean('rem'),
+    )
+    def POST_login(self, form, responder, user, rem=None, **kwargs):
         """Log into an account.
 
         `rem` specifies whether or not the session cookie returned should last
@@ -654,117 +627,27 @@ class ApiController(RedditController):
         that it is not a session cookie).
 
         """
-        return self._handle_login(*args, **kwargs)
-
-    @validatedForm(VRatelimit(rate_ip = True, prefix = "rate_register_"),
-                   name = VUname(['user']),
-                   email=ValidEmail("email"),
-                   password = VPasswordChange(['passwd', 'passwd2']),
-                   rem = VBoolean('rem'),
-                   newsletter_subscribe=VBoolean('newsletter_subscribe',
-                                                 default=False),
-                   sponsor=VBoolean('sponsor', default=False),
-                   )
-    def _handle_register(self, form, responder, name, email,
-                         password, rem, newsletter_subscribe,
-                         sponsor):
-        def _event(error):
-            g.events.login_event(
-                'register_attempt',
-                error_msg=error,
-                user_name=request.urlvars.get('url_user'),
-                email=request.POST.get('email'),
-                remember_me=rem,
-                newsletter=newsletter_subscribe,
-                request=request,
-                context=c)
-
-        if responder.has_errors('user', errors.USERNAME_TOO_SHORT):
-            _event(error='USERNAME_TOO_SHORT')
-
-        elif responder.has_errors('user', errors.USERNAME_INVALID_CHARACTERS):
-            _event(error='USERNAME_INVALID_CHARACTERS')
-
-        elif responder.has_errors('user', errors.USERNAME_TAKEN_DEL):
-            _event(error='USERNAME_TAKEN_DEL')
-
-        elif responder.has_errors('user', errors.USERNAME_TAKEN):
-            _event(error='USERNAME_TAKEN')
-
-        elif responder.has_errors('email', errors.BAD_EMAIL):
-            _event(error='BAD_EMAIL')
-
-        elif responder.has_errors('passwd', errors.SHORT_PASSWORD):
-            _event(error='SHORT_PASSWORD')
-
-        elif responder.has_errors('passwd', errors.BAD_PASSWORD):
-            # BAD_PASSWORD is set when SHORT_PASSWORD is set
-            _event(error='BAD_PASSWORD')
-
-        elif responder.has_errors('passwd2', errors.BAD_PASSWORD_MATCH):
-            _event(error='BAD_PASSWORD_MATCH')
-
-        elif responder.has_errors('ratelimit', errors.RATELIMIT):
-            _event(error='RATELIMIT')
-
-        elif (not g.disable_captcha and
-                responder.has_errors('captcha', errors.BAD_CAPTCHA)):
-            _event(error='BAD_CAPTCHA')
-
-        elif newsletter_subscribe and not email:
-            c.errors.add(errors.NEWSLETTER_NO_EMAIL, field="email")
-            form.has_errors("email", errors.NEWSLETTER_NO_EMAIL)
-            _event(error='NEWSLETTER_NO_EMAIL')
-
-        elif sponsor and not email:
-            c.errors.add(errors.SPONSOR_NO_EMAIL, field="email")
-            form.has_errors("email", errors.SPONSOR_NO_EMAIL)
-            _event(error='SPONSOR_NO_EMAIL')
-
-        else:
-            try:
-                user = register(name, password, request.ip)
-            except AccountExists:
-                c.errors.add(errors.USERNAME_TAKEN, field="user")
-                form.has_errors("user", errors.USERNAME_TAKEN)
-                _event(error='USERNAME_TAKEN')
-                return
-
-            VRatelimit.ratelimit(rate_ip = True, prefix = "rate_register_")
-
-            #anything else we know (email, languages)?
-            if email:
-                user.set_email(email)
-                emailer.verify_email(user)
-
-            user.pref_lang = c.lang
-            if feature.is_enabled('new_user_new_window_preference'):
-                user.pref_newwindow = True
-
-            d = c.user._dirties.copy()
-            user._commit()
-
-            amqp.add_item('new_account', user._fullname)
-
-            hooks.get_hook("account.registered").call(user=user)
-
-            reject = hooks.get_hook("account.spotcheck").call(account=user)
-            if any(reject):
-                _event(error='ACCOUNT_SPOTCHECK')
-                return
-
-            if newsletter_subscribe and email:
-                try:
-                    newsletter.add_subscriber(email, source="register")
-                except newsletter.NewsletterError as e:
-                    g.log.warning("Failed to subscribe: %r" % e)
-
-            self._login(responder, user, rem)
-            _event(error=None)
+        kwargs.update(dict(
+            controller=self,
+            form=form,
+            responder=responder,
+            user=user,
+            rem=rem,
+        ))
+        return handle_login(**kwargs)
 
     @csrf_exempt
     @cross_domain(allow_credentials=True)
-    def POST_register(self, *args, **kwargs):
+    @validatedForm(
+        VRatelimit(rate_ip=True, prefix="rate_register_"),
+        name=VUname(['user']),
+        email=ValidEmail("email"),
+        password=VPasswordChange(['passwd', 'passwd2']),
+        rem=VBoolean('rem'),
+        newsletter_subscribe=VBoolean('newsletter_subscribe', default=False),
+        sponsor=VBoolean('sponsor', default=False),
+    )
+    def POST_register(self, form, responder, name, email, password, **kwargs):
         """Create a new account.
 
         `rem` specifies whether or not the session cookie returned should last
@@ -773,7 +656,15 @@ class ApiController(RedditController):
         that it is not a session cookie).
 
         """
-        return self._handle_register(*args, **kwargs)
+        kwargs.update(dict(
+            controller=self,
+            form=form,
+            responder=responder,
+            name=name,
+            email=email,
+            password=password,
+        ))
+        return handle_register(**kwargs)
 
     @require_oauth2_scope("modself")
     @noresponse(VUser(),
@@ -1440,18 +1331,18 @@ class ApiController(RedditController):
 
     @validatedForm(VUser(),
                    VModhash(),
-                   delete_message = VLength("delete_message", max_length=500),
+                   deactivate_message = VLength("deactivate_message", max_length=500),
                    username = VRequired("user", errors.NOT_USER),
                    user = VThrottledLogin(["user", "passwd"]),
                    confirm = VBoolean("confirm"))
-    def POST_delete_user(self, form, jquery, delete_message, username, user, confirm):
-        """Delete the currently logged in account.
+    def POST_deactivate_user(self, form, jquery, deactivate_message, username, user, confirm):
+        """Deactivate the currently logged in account.
 
         A valid username/password and confirmation must be supplied. An
-        optional `delete_message` may be supplied to explain the reason the
+        optional `deactivate_message` may be supplied to explain the reason the
         account is to be deleted.
 
-        Called by /prefs/delete on the site.
+        Called by /prefs/deactivate on the site.
 
         """
         if username and username.lower() != c.user.name.lower():
@@ -1463,10 +1354,10 @@ class ApiController(RedditController):
         if not (form.has_errors('ratelimit', errors.RATELIMIT) or
                 form.has_errors("user", errors.NOT_USER) or
                 form.has_errors("passwd", errors.WRONG_PASSWORD) or
-                form.has_errors("delete_message", errors.TOO_LONG) or
+                form.has_errors("deactivate_message", errors.TOO_LONG) or
                 form.has_errors("confirm", errors.CONFIRM)):
-            redirect_url = "/?deleted=true"
-            c.user.delete(delete_message)
+            redirect_url = "/?deactivated=true"
+            c.user.delete(deactivate_message)
             form.redirect(redirect_url)
 
     @require_oauth2_scope("edit")
@@ -1490,10 +1381,19 @@ class ApiController(RedditController):
             queries.delete(thing)
             thing.subreddit_slow.remove_sticky(thing)
         elif isinstance(thing, Comment):
-            if not was_deleted:
-                queries.delete_comment(thing)
+            link = thing.link_slow
 
-            thing.link_slow.remove_sticky_comment(comment=thing, set_by=c.user)
+            if not was_deleted:
+                # get lock before writing to avoid multiple decrements when
+                # there are simultaneous duplicate requests
+                lock_key = "lock:del_{link}_{comment}".format(
+                    link=link._id36,
+                    comment=thing._id36,
+                )
+                if g.lock_cache.add(lock_key, "", time=60):
+                    link._incr('num_comments', -1)
+
+            link.remove_sticky_comment(comment=thing, set_by=c.user)
 
             queries.new_comment(thing, None)  # possible inbox_rels are
                                               # handled by unnotify
@@ -1830,9 +1730,38 @@ class ApiController(RedditController):
         thing=VByName('id'),
     )
     @api_doc(api_section.messages)
+    def POST_del_msg(self, thing):
+        """Delete messages from the recipient's view of their inbox."""
+        if not thing:
+            return
+
+        if not isinstance(thing, Message):
+            return
+
+        if thing.to_id != c.user._id:
+            return
+
+        thing.del_on_recipient = True
+        thing._commit()
+
+        # report the message deletion to data pipeline
+        g.events.message_event(thing, event_type="ss.delete_message",
+                               request=request, context=c)
+
+    @require_oauth2_scope("privatemessages")
+    @noresponse(
+        VUser(),
+        VModhash(),
+        thing=VByName('id'),
+    )
+    @api_doc(api_section.messages)
     def POST_block(self, thing):
         '''For blocking via inbox.'''
         if not thing:
+            return
+
+        # don't allow blocking yourself
+        if thing.author_id == c.user._id:
             return
 
         try:
@@ -1846,14 +1775,20 @@ class ApiController(RedditController):
                 BlockedSubredditsByAccount.block(c.user, sr)
             return
 
-        # Users may only block someone who has
-        # actively harassed them (i.e., comment/link reply
-        # or PM). Check that 'thing' is in the user's inbox somewhere
-        if not (sr and sr.is_moderator_with_perms(c.user, 'mail')):
+        # Users may only block someone who has actively harassed them
+        # directly (i.e. comment/link reply or PM). Make sure that 'thing'
+        # is in the user's inbox somewhere, unless it's modmail to a
+        # subreddit that the user moderates (since then it's not
+        # necessarily in their personal inbox)
+        is_modmail = (isinstance(thing, Message)
+            and sr
+            and sr.is_moderator_with_perms(c.user, 'mail'))
+
+        if not is_modmail:
             inbox_cls = Inbox.rel(Account, thing.__class__)
             rels = inbox_cls._fast_query(c.user, thing,
                                         ("inbox", "selfreply", "mention"))
-            if not filter(None, rels.values()):
+            if not any(rels.values()):
                 return
 
         block_acct = Account._byID(thing.author_id)
@@ -1861,6 +1796,16 @@ class ApiController(RedditController):
         if block_acct.name in g.admins or display_author:
             return
         c.user.add_enemy(block_acct)
+
+        # report the user blocking to data pipeline
+        g.events.report_event(
+            subreddit=sr,
+            target=thing,
+            request=request,
+            context=c,
+            event_type="ss.block_user"
+        )
+
 
     @require_oauth2_scope("privatemessages")
     @noresponse(
@@ -2079,33 +2024,24 @@ class ApiController(RedditController):
 
             if parent.sr_id and not c.user_is_admin:
                 sr = parent.subreddit_slow
-                # get the first message to see who the non-mod recipient
-                # in a modmail conversation is
-                message = parent
-                if parent.first_message:
-                    message = Message._byID(parent.first_message, data=True)
 
-                user_muted_error = False
-                if sr.is_muted(message.author_slow):
-                    user_muted_error = True
-                    muted_user = message.author_slow
-                elif message.to_id and sr.is_muted(message.recipient_slow):
-                    user_muted_error = True
-                    muted_user = message.recipient_slow
-
-                if user_muted_error:
-                    if sr.is_moderator(c.user):
-                        c.errors.add(errors.MUTED_FROM_SUBREDDIT, field="parent")
+                if sr.is_moderator(c.user) and not c.user_is_admin:
+                    # don't let a moderator message a muted user
+                    muted_user = parent.get_muted_user_in_conversation()
+                    if muted_user:
+                        c.errors.add(
+                            errors.MUTED_FROM_SUBREDDIT, field="parent")
                         g.events.muted_forbidden_event("muted mod",
                             sr, parent_message=parent, target=muted_user,
                             request=request, context=c,
                         )
-                    else:
-                        c.errors.add(errors.USER_MUTED, field="parent")
-                        g.events.muted_forbidden_event("muted",
-                            parent_message=parent, target=sr,
-                            request=request, context=c,
-                        )
+                elif sr.is_muted(c.user):
+                    # don't let a muted user message the subreddit
+                    c.errors.add(errors.USER_MUTED, field="parent")
+                    g.events.muted_forbidden_event("muted",
+                        parent_message=parent, target=sr,
+                        request=request, context=c,
+                    )
 
             is_message = True
             should_ratelimit = False
@@ -2119,10 +2055,10 @@ class ApiController(RedditController):
                 link = parent
                 parent_comment = None
             else:
-                link = Link._byID(parent.link_id, data = True)
+                link = Link._byID(parent.link_id)
                 parent_comment = parent
 
-            sr = parent.subreddit_slow
+            sr = Subreddit._byID(parent.sr_id, stale=True)
             is_author = link.author_id == c.user._id
             if (is_author and (link.is_self or promote.is_promo(link)) or
                     not sr.should_ratelimit(c.user, 'comment')):
@@ -2175,10 +2111,6 @@ class ApiController(RedditController):
 
             item, inbox_rel = Message._new(c.user, to, subject, comment,
                                            request.ip, parent=parent)
-            item.parent_id = parent._id
-            if parent.display_author and not getattr(parent, "signed", False):
-                item.display_to = parent.display_author
-            item._commit()
         else:
             # Don't let users in timeout comment
             VNotInTimeout().run(action_name='comment', target=parent)
@@ -2245,6 +2177,11 @@ class ApiController(RedditController):
         VNotInTimeout().run(target=link, subreddit=subreddit)
 
         emails, users = share_to
+
+        # disallow email share for accounts without a verified email address
+        if emails and (not c.user.email or not c.user.email_verified):
+            return abort(403, 'forbidden')
+
         link_title = _force_unicode(link.title)
 
         if getattr(link, "promoted", None) and link.disable_comments:
@@ -2333,6 +2270,10 @@ class ApiController(RedditController):
 
         """
 
+        # a persistent A/A to provide a consistent event stream and confidence
+        # in bucketing to the data team
+        feature.is_enabled('persistent_vote_a_a')
+
         if not thing or thing._deleted:
             return self.abort404()
 
@@ -2349,10 +2290,8 @@ class ApiController(RedditController):
             return abort(400,
                 "This thing is archived and may no longer be voted on")
 
-        subreddit = thing.subreddit_slow
-
         # Don't allow users in timeout to vote
-        VNotInTimeout().run(target=thing, subreddit=subreddit)
+        VNotInTimeout().run(target=thing)
 
         # convert vote direction to enum value
         if direction == 1:
@@ -2922,6 +2861,8 @@ class ApiController(RedditController):
                 not c.user_is_admin):
             form.set_error(errors.CANT_CONVERT_TO_GOLD_ONLY, 'type')
             c.errors.add(errors.CANT_CONVERT_TO_GOLD_ONLY, field='type')
+        elif form.has_errors('type', errors.GOLD_REQUIRED):
+            pass
         elif not sr and form.has_errors("name", errors.SUBREDDIT_EXISTS,
                                         errors.BAD_SR_NAME):
             form.find('#example_name').hide()
@@ -3003,7 +2944,7 @@ class ApiController(RedditController):
 
             for k, v in kw.iteritems():
                 if getattr(sr, k, None) != v:
-                    ModAction.create(sr, c.user, action='editsettings', 
+                    ModAction.create(sr, c.user, action='editsettings',
                                      details=k)
 
                 setattr(sr, k, v)
@@ -3280,7 +3221,7 @@ class ApiController(RedditController):
                     not previously_distinguished and
                     user_can_notify):
                 inbox_rel = Inbox._add(to, thing, 'selfreply')
-                queries.new_comment(thing, inbox_rel)
+                queries.update_comment_notifications(thing, inbox_rel)
 
             # Sticky handling - done before commit so that if there is an error
             # setting sticky we don't distinguish. This ordering does leave the
@@ -3528,7 +3469,7 @@ class ApiController(RedditController):
 
     @require_oauth2_scope("read")
     @validatedForm(
-        link=VByName('link_id'),
+        link=VByName('link_id', thing_cls=Link),
         sort=VMenu('morechildren', CommentSortMenu, remember=False),
         children=VCommentIDs('children'),
         mc_id=nop(
@@ -3573,6 +3514,7 @@ class ApiController(RedditController):
                 return abort(403,'forbidden')
 
             if children:
+                children = list(set(children))
                 builder = CommentBuilder(link, CommentSortMenu.operator(sort),
                                          children=children,
                                          num=CHILD_FETCH_COUNT)
@@ -3659,7 +3601,7 @@ class ApiController(RedditController):
                     message += "\n\n" + strings.gold_benefits_msg
 
                     if g.lounge_reddit:
-                        message += "\n* " + strings.lounge_msg
+                        message += "\n\n" + strings.lounge_msg
                     message = append_random_bottlecap_phrase(message)
 
                     try:
@@ -3755,9 +3697,7 @@ class ApiController(RedditController):
 
         # add this ip to the user's account so they can sign in even if
         # their account is being brute forced by a third party.
-        if config['r2.import_private']:
-            from r2admin.lib.ip_events import renew_ref_account_ip
-            renew_ref_account_ip(user._id, request.ip, c.start_time)
+        set_account_ip(user._id, request.ip, c.start_time)
 
         # if the token is for the current user, their cookies will be
         # invalidated and they'll have to log in again.
@@ -4801,6 +4741,9 @@ class ApiController(RedditController):
         if client_id:
             # client_id was specified, updating existing OAuth2Client
             client = OAuth2Client.get_token(client_id)
+            if client.is_first_party() and not c.user_is_admin:
+                form.set_text('.status', _('this app can not be modified from this interface'))
+                return
             if app_type != client.app_type:
                 # App type cannot be changed after creation
                 abort(400, "invalid request")
@@ -4848,6 +4791,15 @@ class ApiController(RedditController):
             return
         if form.has_errors('name', errors.USER_DOESNT_EXIST, errors.NO_USER):
             return
+        if client.is_first_party() and not c.user_is_admin:
+            c.errors.add(errors.DEVELOPER_FIRST_PARTY_APP, field='name')
+            form.set_error(errors.DEVELOPER_FIRST_PARTY_APP, 'name')
+            return
+        if ((account.employee or account == Account.system_user()) and
+           not c.user_is_admin):
+            c.errors.add(errors.DEVELOPER_PRIVILEGED_ACCOUNT, field='name')
+            form.set_error(errors.DEVELOPER_PRIVILEGED_ACCOUNT, 'name')
+            return
         if client.has_developer(account):
             c.errors.add(errors.DEVELOPER_ALREADY_ADDED, field='name')
             form.set_error(errors.DEVELOPER_ALREADY_ADDED, 'name')
@@ -4870,6 +4822,10 @@ class ApiController(RedditController):
                    client=VOAuth2ClientDeveloper(),
                    account=VExistingUname('name'))
     def POST_removedeveloper(self, form, jquery, client, account):
+        if client.is_first_party() and not c.user_is_admin:
+            c.errors.add(errors.DEVELOPER_FIRST_PARTY_APP, field='name')
+            form.set_error(errors.DEVELOPER_FIRST_PARTY_APP, 'name')
+            return
         if client and account and not form.has_errors('name'):
             client.remove_developer(account)
             if account._id == c.user._id:
@@ -5030,9 +4986,12 @@ class ApiController(RedditController):
         that appear in the optional `omit` param.
 
         """
-        omit_id36s = [sr._id36 for sr in to_omit.values()]
-        rec_srs = recommender.get_recommendations(srs.values(),
-                                                  to_omit=omit_id36s)
+
+        srs = [sr for sr in srs.values() if not isinstance(sr, FakeSubreddit)]
+        to_omit = [sr for sr in to_omit.values() if not isinstance(sr, FakeSubreddit)]
+
+        omit_id36s = [sr._id36 for sr in to_omit]
+        rec_srs = recommender.get_recommendations(srs, to_omit=omit_id36s)
         sr_data = [{'sr_name': sr.name} for sr in rec_srs]
         return json.dumps(sr_data)
 

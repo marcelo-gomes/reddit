@@ -25,14 +25,13 @@ import json
 import re
 import simplejson
 import socket
-import random
 import itertools
 
 from Cookie import CookieError
 from copy import copy
 from datetime import datetime, timedelta
 from functools import wraps
-from hashlib import sha1
+from hashlib import sha1, md5
 from urllib import quote, unquote
 from urlparse import urlparse
 
@@ -48,7 +47,15 @@ from pylons.i18n.translation import LanguageError
 
 from r2.config import feature
 from r2.config.extensions import is_api, set_extension
-from r2.lib import filters, pages, utils, hooks, ratelimit
+from r2.lib import (
+    baseplate_integration,
+    filters,
+    geoip,
+    hooks,
+    pages,
+    ratelimit,
+    utils,
+)
 from r2.lib.base import BaseController, abort
 from r2.lib.cache import (
     is_valid_size_for_cache,
@@ -161,6 +168,35 @@ def pagecache_policy(policy):
     return pagecache_decorator
 
 
+def vary_pagecache_on_experiments(*names):
+    """Keep track of which loid-based experiments are affecting the pagecache.
+
+    Since loid-based experiments will vary the resulting content, this is used
+    to accumulate a whitelist of experiments referenced in the decorator below.
+    """
+    # we are going to use this to build the cache key, so
+    # consistent ordering at compile time would be nice
+    global_experiments = g.live_config.get("global_loid_experiments")
+    if global_experiments:
+        names = names + tuple(global_experiments)
+    names = sorted(names)
+
+    def _vary_pagecache_on_experiments(fn):
+        # store this list on the handler itself, since (by the nature of the
+        # page cache) we won't actually *call* this handler.  We'll set
+        # the whitelist on c in `request_key` and in the decorated body
+        fn.whitelisted_loid_experiments = names
+
+        @wraps(fn)
+        def _vary_pagecache_on_experiments_inner(self, *a, **kw):
+            # For checking the whitelist in the feature methods, set it on
+            # the request context.
+            c.whitelisted_loid_experiments = names
+            return fn(self, *a, **kw)
+        return _vary_pagecache_on_experiments_inner
+    return _vary_pagecache_on_experiments
+
+
 cache_affecting_cookies = ('over18', '_options', 'secure_session')
 # Cookies which may be set in a response without making it uncacheable
 CACHEABLE_COOKIES = ()
@@ -181,9 +217,7 @@ class UnloggedUser(FakeAccount):
         self._defaults['pref_lang'] = lang
         self._defaults['pref_hide_locationbar'] = False
         self._defaults['pref_use_global_defaults'] = False
-        if feature.is_enabled('new_user_new_window_preference'):
-            self._defaults['pref_newwindow'] = True
-        self._load()
+        self._t.update(self._from_cookie())
 
     @property
     def name(self):
@@ -238,10 +272,6 @@ class UnloggedUser(FakeAccount):
             for k, (oldv, newv) in self._dirties.iteritems():
                 self._t[k] = newv
             self._to_cookie(self._t)
-
-    def _load(self):
-        self._t.update(self._from_cookie())
-        self._loaded = True
 
 def read_user_cookie(name):
     uname = c.user.name if c.user_is_loggedin else ""
@@ -579,9 +609,15 @@ def set_colors():
 
 
 def ratelimit_agent(agent, limit=10, slice_size=10):
+
+    # Ensure the agent regex is a valid memcached key
+    h = md5()
+    h.update(agent)
+    hashed_agent = h.hexdigest()
+
     slice_size = min(slice_size, 60)
     time_slice = ratelimit.get_timeslice(slice_size)
-    usage = ratelimit.record_usage("rl-agent-" + agent, time_slice)
+    usage = ratelimit.record_usage("rl-agent-" + hashed_agent, time_slice)
     if usage > limit:
         request.environ['retry_after'] = time_slice.remaining
         abort(429)
@@ -601,11 +637,12 @@ def ratelimit_agents():
         ratelimit_agent(appid)
         return
 
-    user_agent = user_agent.lower()
-    for agent, limit in g.agents.iteritems():
-        if agent in user_agent:
-            ratelimit_agent(agent, limit)
+    # Search anywhere in the useragent for the given regex
+    for agent_re, limit in g.user_agent_ratelimit_regexes.iteritems():
+        if agent_re.search(user_agent):
+            ratelimit_agent(agent_re.pattern, limit)
             return
+
 
 def ratelimit_throttled():
     ip = request.ip.strip()
@@ -836,6 +873,23 @@ class MinimalController(BaseController):
         else:
             location = None
 
+        whitelisted_variants = []
+        # if there are logged out experiments expected, we need to vary
+        # the cache key on them
+        if (
+            g.enable_loggedout_experiments and
+            not c.user_is_loggedin and c.loid
+        ):
+            handler = self._get_action_handler()
+            if hasattr(handler, "whitelisted_loid_experiments"):
+                # pull the whitelist onto `c` as we check there in features
+                whitelist = handler.whitelisted_loid_experiments
+                c.whitelisted_loid_experiments = whitelist
+                for name in whitelist:
+                    whitelisted_variants.append(
+                        (name, feature.variant(name, None))
+                    )
+
         _id = make_key_id(
             c.lang,
             request.host,
@@ -848,6 +902,7 @@ class MinimalController(BaseController):
             feature.is_enabled("https_redirect"),
             request.environ.get("WANT_RAW_JSON"),
             cookies_key,
+            whitelisted_variants,
         )
         key = "page:%s" % _id
         return key
@@ -953,15 +1008,7 @@ class MinimalController(BaseController):
         else:
             c.request_timer = SimpleSillyStub()
 
-        trace_id = random.getrandbits(64)
-        c.trace = g.baseplate.make_root_span(
-            context=c,
-            trace_id=trace_id,
-            parent_id=None,
-            span_id=trace_id,
-            name=key,
-        )
-        c.trace.start()
+        baseplate_integration.start_root_span(span_name=key)
 
         c.response_wrapper = None
         c.start_time = datetime.now(g.tz)
@@ -1172,6 +1219,10 @@ class MinimalController(BaseController):
                                     httponly=getattr(v, 'httponly', False))
 
 
+        if not isinstance(c.site, FakeSubreddit) and not g.disallow_db_writes:
+            if c.user_is_loggedin:
+                c.site.record_visitor_activity("logged_in", c.user._fullname)
+
         if self.should_update_last_visit():
             c.user.update_last_visit(c.start_time)
 
@@ -1186,7 +1237,7 @@ class MinimalController(BaseController):
         c.request_timer.intermediate("post")
 
         # push data to statsd
-        c.trace.stop()
+        baseplate_integration.stop_root_span()
         c.request_timer.stop()
         g.stats.flush()
 
@@ -1331,15 +1382,9 @@ class OAuth2ResourceController(MinimalController):
                 return None
 
     def set_up_user_context(self):
-        if not c.user._loaded:
-            c.user._load()
-
         if c.user.inbox_count > 0:
             c.have_messages = True
         c.have_mod_messages = bool(c.user.modmsgtime)
-
-        if not isinstance(c.site, FakeSubreddit) and not g.disallow_db_writes:
-            c.user.update_sr_activity(c.site)
 
         c.user_special_distinguish = c.user.special_distinguish()
 

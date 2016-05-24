@@ -125,10 +125,6 @@ class CommentTreeStorageBase(object):
             parents[cid] = p_id
 
     @classmethod
-    def delete_comment(cls, tree, comment):
-        pass
-
-    @classmethod
     def prepare_new_storage(cls, link):
         """Do whatever's needed to initialize the storage for a new link."""
         pass
@@ -181,6 +177,10 @@ class CommentTreeStorageV1(CommentTreeStorageBase):
 
     @classmethod
     def add_comments(cls, tree, comments):
+        if all(comment._id in tree.cids for comment in comments):
+            # don't bother to write if this would be a no-op
+            return
+
         with cls.mutation_context(tree.link):
             CommentTreeStorageBase.add_comments(tree, comments)
             key = cls._comments_key(tree.link._id)
@@ -245,11 +245,6 @@ class CommentTree:
         impl = self.IMPLEMENTATIONS[self.link.comment_tree_version]
         impl.add_comments(self, comments)
 
-    def delete_comment(self, comment, link):
-        impl = self.IMPLEMENTATIONS[link.comment_tree_version]
-        impl.delete_comment(self, comment)
-        self.link._incr('num_comments', -1)
-
     @classmethod
     def rebuild(cls, link):
         # fetch all comments and sort by parent_id, so parents are added to the
@@ -269,7 +264,7 @@ class CommentTree:
         ]
 
         # build tree from scratch (for V2 results in double-counting in cass)
-        tree = cls(link, cids=[], tree={}, depth={}, parents={})
+        tree = cls(link, cids=[], tree={}, depth={}, parents={}, num_children={})
         impl = cls.IMPLEMENTATIONS[link.comment_tree_version]
         impl.rebuild(tree, comments)
 

@@ -150,6 +150,7 @@ from r2.models import (
     Subreddit,
     Target,
 )
+from r2.models.promo import PROMOTE_COST_BASIS, PROMOTE_PRIORITIES
 
 IOS_DEVICES = ('iPhone', 'iPad', 'iPod',)
 ANDROID_DEVICES = ('phone', 'tablet',)
@@ -190,14 +191,21 @@ def campaign_has_oversold_error(form, campaign):
         return
 
     return has_oversold_error(
-        form, campaign, campaign.start_date, campaign.end_date, campaign.bid,
-        campaign.cpm, campaign.target, campaign.location,
+        form,
+        campaign,
+        start=campaign.start_date,
+        end=campaign.end_date,
+        total_budget_pennies=campaign.total_budget_pennies,
+        cpm=campaign.bid_pennies,
+        target=campaign.target,
+        location=campaign.location,
     )
 
 
-def has_oversold_error(form, campaign, start, end, bid, cpm, target, location):
+def has_oversold_error(form, campaign, start, end, total_budget_pennies, cpm,
+        target, location):
     ndays = (to_date(end) - to_date(start)).days
-    total_request = calc_impressions(bid, cpm)
+    total_request = calc_impressions(total_budget_pennies, cpm)
     daily_request = int(total_request / ndays)
     oversold = inventory.get_oversold(
         target, start, end, daily_request, ignore=campaign, location=location)
@@ -211,9 +219,9 @@ def has_oversold_error(form, campaign, start, end, bid, cpm, target, location):
             'start': start.strftime('%m/%d/%Y'),
             'end': end.strftime('%m/%d/%Y'),
         }
-        c.errors.add(errors.OVERSOLD_DETAIL, field='bid',
+        c.errors.add(errors.OVERSOLD_DETAIL, field='total_budget_dollars',
                      msg_params=msg_params)
-        form.has_errors('bid', errors.OVERSOLD_DETAIL)
+        form.has_errors('total_budget_dollars', errors.OVERSOLD_DETAIL)
         return True
 
 
@@ -444,9 +452,28 @@ class PromoteListingController(ListingController):
         'unpaid_promos': N_('unpaid promoted links'),
         'rejected_promos': N_('rejected promoted links'),
         'live_promos': N_('live promoted links'),
+        'edited_live_promos': N_('edited live promoted links'),
         'all': N_('all promoted links'),
     }
     base_path = '/promoted'
+
+    default_filters = [
+        NamedButton('all_promos', dest='',
+                    use_params=False,
+                    aliases=['/sponsor']),
+        NamedButton('future_promos',
+                    use_params=False),
+        NamedButton('unpaid_promos',
+                    use_params=False),
+        NamedButton('rejected_promos',
+                    use_params=False),
+        NamedButton('pending_promos',
+                    use_params=False),
+        NamedButton('live_promos',
+                    use_params=False),
+        NamedButton('edited_live_promos',
+                    use_params=False),
+    ]
 
     def title(self):
         return _(self.titles[self.sort])
@@ -510,6 +537,8 @@ class PromoteListingController(ListingController):
             return queries.get_rejected_links(c.user._id)
         elif self.sort == "live_promos":
             return queries.get_live_links(c.user._id)
+        elif self.sort == "edited_live_promos":
+            return queries.get_edited_live_links(c.user._id)
         elif self.sort == "all":
             return queries.get_promoted_links(c.user._id)
 
@@ -631,6 +660,8 @@ class SponsorListingController(PromoteListingController):
             return self.live_by_subreddit(self.sr)
         elif self.sort == 'live_promos':
             return queries.get_all_live_links()
+        elif self.sort == 'edited_live_promos':
+            return queries.get_all_edited_live_links()
         elif self.sort == 'underdelivered':
             q = queries.get_underdelivered_campaigns()
             campaigns = PromoCampaign._by_fullname(list(q), data=True,
@@ -691,7 +722,7 @@ class SponsorListingController(PromoteListingController):
 
 
 def allowed_location_and_target(location, target):
-    if c.user_is_sponsor:
+    if c.user_is_sponsor or feature.is_enabled('ads_auction'):
         return True
 
     # regular users can only use locations when targeting frontpage
@@ -792,16 +823,28 @@ class PromoteApiController(ApiController):
         if not link or not campaign or link._id != campaign.link_id:
             return abort(404, 'not found')
 
-        billable_impressions = promote.get_billable_impressions(campaign)
-        billable_amount = promote.get_billable_amount(campaign,
-                                                      billable_impressions)
-        refund_amount = promote.get_refund_amount(campaign, billable_amount)
-        if refund_amount > 0:
-            promote.refund_campaign(link, campaign, billable_amount,
-                                    billable_impressions)
+        # If created before switch to auction, use old billing method
+        if hasattr(campaign, 'cpm'):
+            billable_impressions = promote.get_billable_impressions(campaign)
+            billable_amount = promote.get_billable_amount(campaign,
+                billable_impressions)
+            refund_amount = promote.get_refund_amount(campaign, billable_amount)
+        # Otherwise, use adserver_spent_pennies
+        else:
+            billable_amount = campaign.total_budget_pennies / 100.
+            refund_amount = (billable_amount -
+                (campaign.adserver_spent_pennies / 100.))
+            billable_impressions = None
+
+        if refund_amount <= 0:
+            form.set_text('.status', _('refund not needed'))
+            return
+
+        if promote.refund_campaign(link, campaign, refund_amount,
+                billable_amount, billable_impressions):
             form.set_text('.status', _('refund succeeded'))
         else:
-            form.set_text('.status', _('refund not needed'))
+            form.set_text('.status', _('refund failed'))
 
     @validatedForm(
         VSponsor('link_id36'),
@@ -991,24 +1034,25 @@ class PromoteApiController(ApiController):
             return
 
         changed = False
-        # live items can only be changed by a sponsor, and also
-        # pay the cost of de-approving the link
-        if not promote.is_promoted(l) or c.user_is_sponsor:
-            if title and title != l.title:
-                l.title = title
-                changed = True
+        if title and title != l.title:
+            l.title = title
+            changed = True
 
-            if _force_images(l, thumbnail=thumbnail, mobile=mobile):
-                changed = True
+        if _force_images(l, thumbnail=thumbnail, mobile=mobile):
+            changed = True
 
-            # type changing
-            if is_self != l.is_self:
-                l.set_content(is_self, selftext if is_self else url)
-                changed = True
+        # type changing
+        if is_self != l.is_self:
+            l.set_content(is_self, selftext if is_self else url)
+            changed = True
+
+        if is_link and url and url != l.url:
+            l.url = url
+            changed = True
 
         # only trips if changed by a non-sponsor
-        if changed and not c.user_is_sponsor:
-            promote.unapprove_promotion(l)
+        if changed and not c.user_is_sponsor and promote.is_promoted(l):
+            promote.edited_live_promotion(l)
 
         # selftext can be changed at any time
         if is_self:
@@ -1164,18 +1208,29 @@ class PromoteApiController(ApiController):
             PromotedLinkRoadblock.remove(sr, start, end)
             jquery.refresh()
 
+    def _lowest_max_bid_dollars(self, total_budget_dollars, bid_dollars, start,
+            end):
+        """
+        Calculate the lower between g.max_bid_pennies
+        and maximum bid per day by budget
+        """
+        ndays = (to_date(end) - to_date(start)).days
+        max_daily_bid = total_budget_dollars / ndays
+        max_bid_dollars = g.max_bid_pennies / 100.
+
+        return min(max_daily_bid, max_bid_dollars)
+
     @validatedForm(
         VSponsor('link_id36'),
         VModhash(),
+        is_auction=VBoolean('is_auction'),
         start=VDate('startdate', required=False),
         end=VDate('enddate'),
         link=VLink('link_id36'),
-        bid=VFloat('bid', coerce=False),
         target=VPromoTarget(),
         campaign_id36=nop("campaign_id36"),
         frequency_cap=VFrequencyCap(("frequency_capped",
-                                     "frequency_cap",
-                                     "frequency_cap_duration"),),
+                                     "frequency_cap"),),
         priority=VPriority("priority"),
         location=VLocation(),
         platform=VOneOf("platform", ("mobile", "desktop", "all"), default="desktop"),
@@ -1185,21 +1240,121 @@ class PromoteApiController(ApiController):
         android_devices=VList('android_device', choices=ANDROID_DEVICES),
         ios_versions=VOSVersion('ios_version_range', 'ios'),
         android_versions=VOSVersion('android_version_range', 'android'),
+        total_budget_dollars=VFloat('total_budget_dollars', coerce=False),
+        cost_basis=VOneOf('cost_basis', ('cpc', 'cpm',), default=None),
+        bid_dollars=VFloat('bid_dollars', coerce=True),
     )
-    def POST_edit_campaign(self, form, jquery, link, campaign_id36,
-                           start, end, bid, target, frequency_cap,
+    def POST_edit_campaign(self, form, jquery, is_auction, link, campaign_id36,
+                           start, end, target, frequency_cap,
                            priority, location, platform, mobile_os,
                            os_versions, ios_devices, ios_versions,
-                           android_devices, android_versions):
+                           android_devices, android_versions,
+                           total_budget_dollars, cost_basis, bid_dollars):
         if not link:
             return
 
-        if form.has_errors('frequency_cap', errors.INVALID_FREQUENCY_CAP):
+        if (form.has_errors('frequency_cap', errors.INVALID_FREQUENCY_CAP) or
+                form.has_errors('frequency_cap', errors.FREQUENCY_CAP_TOO_LOW)):
             return
+
+        if not target:
+            # run form.has_errors to populate the errors in the response
+            form.has_errors('sr', errors.SUBREDDIT_NOEXIST,
+                            errors.SUBREDDIT_NOTALLOWED,
+                            errors.SUBREDDIT_REQUIRED)
+            form.has_errors('collection', errors.COLLECTION_NOEXIST)
+            form.has_errors('targeting', errors.INVALID_TARGET)
+            return
+
+        if form.has_errors('location', errors.INVALID_LOCATION):
+            return
+
+        if not allowed_location_and_target(location, target):
+            return abort(403, 'forbidden')
+
+        if (form.has_errors('startdate', errors.BAD_DATE) or
+                form.has_errors('enddate', errors.BAD_DATE)):
+            return
+
+        if not campaign_id36 and not start:
+            c.errors.add(errors.BAD_DATE, field='startdate')
+            form.set_error('startdate', errors.BAD_DATE)
 
         if (not feature.is_enabled('mobile_targeting') and
                 platform != 'desktop'):
             return abort(403, 'forbidden')
+
+        if link.over_18 and not target.over_18:
+            c.errors.add(errors.INVALID_NSFW_TARGET, field='targeting')
+            form.has_errors('targeting', errors.INVALID_NSFW_TARGET)
+            return
+
+        if not feature.is_enabled('cpc_pricing'):
+            cost_basis = 'cpm'
+
+        # Setup campaign details for existing campaigns
+        campaign = None
+        if campaign_id36:
+            try:
+                campaign = PromoCampaign._byID36(campaign_id36, data=True)
+            except NotFound:
+                pass
+
+            if (not campaign
+                    or (campaign._deleted or link._id != campaign.link_id)):
+                return abort(404, 'not found')
+
+            requires_reapproval = False
+            is_live = promote.is_live_promo(link, campaign)
+            is_complete = promote.is_complete_promo(link, campaign)
+
+            if not c.user_is_sponsor:
+                # If campaign is live, start_date and total_budget_dollars
+                # must not be changed
+                if is_live:
+                    start = campaign.start_date
+                    total_budget_dollars = campaign.total_budget_dollars
+
+        # Configure priority, cost_basis, and bid_pennies
+        if feature.is_enabled('ads_auction'):
+            if c.user_is_sponsor:
+                if is_auction:
+                    priority = PROMOTE_PRIORITIES['auction']
+                    cost_basis = PROMOTE_COST_BASIS[cost_basis]
+                else:
+                    cost_basis = PROMOTE_COST_BASIS.fixed_cpm
+            else:
+                # if non-sponsor, is_auction is not part of the POST request,
+                # so must be set independently
+                is_auction = True
+                priority = PROMOTE_PRIORITIES['auction']
+                cost_basis = PROMOTE_COST_BASIS[cost_basis]
+
+                # Error if bid is outside acceptable range
+                min_bid_dollars = g.min_bid_pennies / 100.
+                max_bid_dollars = self._lowest_max_bid_dollars(
+                    total_budget_dollars=total_budget_dollars,
+                    bid_dollars=bid_dollars,
+                    start=start,
+                    end=end)
+
+                if bid_dollars < min_bid_dollars or bid_dollars > max_bid_dollars:
+                    c.errors.add(errors.BAD_BID, field='bid',
+                        msg_params={'min': '%.2f' % round(min_bid_dollars, 2),
+                                    'max': '%.2f' % round(max_bid_dollars, 2)}
+                    )
+                    form.has_errors('bid', errors.BAD_BID)
+                    return
+
+        else:
+            cost_basis = PROMOTE_COST_BASIS.fixed_cpm
+
+        if priority == PROMOTE_PRIORITIES['auction']:
+            bid_pennies = bid_dollars * 100
+        else:
+            link_owner = Account._byID(link.author_id)
+            bid_pennies = PromotionPrices.get_price(link_owner, target,
+                location)
 
         if platform == 'desktop':
             mobile_os = None
@@ -1222,52 +1377,31 @@ class PromoteApiController(ApiController):
                     form.set_error(errors.INVALID_OS_VERSION, 'os_version')
                     return
 
-        if not target:
-            # run form.has_errors to populate the errors in the response
-            form.has_errors('sr', errors.SUBREDDIT_NOEXIST,
-                            errors.SUBREDDIT_NOTALLOWED,
-                            errors.SUBREDDIT_REQUIRED)
-            form.has_errors('collection', errors.COLLECTION_NOEXIST)
-            form.has_errors('targeting', errors.INVALID_TARGET)
-            return
-
-        if not allowed_location_and_target(location, target):
-            return abort(403, 'forbidden')
-
-        cpm = PromotionPrices.get_price(c.user, target, location)
-
-        if (form.has_errors('startdate', errors.BAD_DATE) or
-                form.has_errors('enddate', errors.BAD_DATE)):
-            return
-
-        if not campaign_id36 and not start:
-            c.errors.add(errors.BAD_DATE, field='startdate')
-            form.set_error('startdate', errors.BAD_DATE)
-
         min_start, max_start, max_end = promote.get_date_limits(
             link, c.user_is_sponsor)
 
-        if campaign_id36:
-            promo_campaign = PromoCampaign._byID36(campaign_id36)
+        if campaign:
+            if feature.is_enabled('ads_auction'):
+                # non-sponsors cannot update fixed CPM campaigns,
+                # even if they haven't launched (due to auction)
+                if not c.user_is_sponsor and not campaign.is_auction:
+                    c.errors.add(errors.COST_BASIS_CANNOT_CHANGE,
+                        field='cost_basis')
+                    form.set_error(errors.COST_BASIS_CANNOT_CHANGE, 'cost_basis')
+                    return
 
-            # Start not sent for campaigns already serving,
-            # use the current start
-            if not start:
-                start = promo_campaign.start_date
+            if not c.user_is_sponsor:
+                # If target is changed, require reapproval
+                if campaign.target != target:
+                    requires_reapproval = True
 
-            if promo_campaign.start_date.date() != start.date():
+            if campaign.start_date.date() != start.date():
                 # Can't edit the start date of campaigns that have served
-                if promo_campaign.has_served:
+                if campaign.has_served:
                     c.errors.add(errors.START_DATE_CANNOT_CHANGE, field='startdate')
                     form.has_errors('startdate', errors.START_DATE_CANNOT_CHANGE)
                     return
 
-                # Or that are live or completed
-                live_campaigns = promote.live_campaigns_by_link(link)
-                is_pending = promote.is_pending(promo_campaign)
-                is_live = promo_campaign in live_campaigns
-                is_complete = (promo_campaign.is_paid and
-                               not (is_live or is_pending))
                 if is_live or is_complete:
                     c.errors.add(errors.START_DATE_CANNOT_CHANGE, field='startdate')
                     form.has_errors('startdate', errors.START_DATE_CANNOT_CHANGE)
@@ -1310,48 +1444,41 @@ class PromoteApiController(ApiController):
             form.has_errors('title', errors.TOO_MANY_CAMPAIGNS)
             return
 
-        campaign = None
-        if campaign_id36:
-            try:
-                campaign = PromoCampaign._byID36(campaign_id36, data=True)
-            except NotFound:
-                pass
+        if not priority == PROMOTE_PRIORITIES['house']:
+            # total_budget_dollars is submitted as a float;
+            # convert it to pennies
+            total_budget_pennies = int(total_budget_dollars * 100)
+            if c.user_is_sponsor:
+                min_total_budget_pennies = 0
+                max_total_budget_pennies = 0
+            else:
+                min_total_budget_pennies = g.min_total_budget_pennies
+                max_total_budget_pennies = g.max_total_budget_pennies
 
-            if campaign and (campaign._deleted or link._id != campaign.link_id):
-                campaign = None
-
-            if not campaign:
-                return abort(404, 'not found')
-
-        if priority.cpm:
-            min_bid = 0 if c.user_is_sponsor else g.min_promote_bid
-            max_bid = None if c.user_is_sponsor else g.max_promote_bid
-
-            if bid is None or bid < min_bid or (max_bid and bid > max_bid):
-                c.errors.add(errors.BAD_BID, field='bid',
-                             msg_params={'min': min_bid,
-                                         'max': max_bid or g.max_promote_bid})
-                form.has_errors('bid', errors.BAD_BID)
+            if (total_budget_pennies is None or
+                    total_budget_pennies < min_total_budget_pennies or
+                    (max_total_budget_pennies and
+                    total_budget_pennies > max_total_budget_pennies)):
+                c.errors.add(errors.BAD_BUDGET, field='total_budget_dollars',
+                             msg_params={'min': min_total_budget_pennies,
+                                         'max': max_total_budget_pennies or
+                                         g.max_total_budget_pennies})
+                form.has_errors('total_budget_dollars', errors.BAD_BUDGET)
                 return
 
             # you cannot edit the bid of a live ad unless it's a freebie
-            if (campaign and bid != campaign.bid and
-                promote.is_live_promo(link, campaign) and
-                not campaign.is_freebie()):
-                c.errors.add(errors.BID_LIVE, field='bid')
-                form.has_errors('bid', errors.BID_LIVE)
+            if (campaign and
+                    total_budget_pennies != campaign.total_budget_pennies and
+                    promote.is_live_promo(link, campaign) and
+                    not campaign.is_freebie()):
+                c.errors.add(errors.BUDGET_LIVE, field='total_budget_dollars')
+                form.has_errors('total_budget_dollars', errors.BUDGET_LIVE)
                 return
-
         else:
-            bid = 0.   # Set bid to 0 as dummy value
+            total_budget_pennies = 0
 
         is_frontpage = (not target.is_collection and
                         target.subreddit_name == Frontpage.name)
-
-        if link.over_18 and not target.over_18:
-            c.errors.add(errors.INVALID_NSFW_TARGET, field='targeting')
-            form.has_errors('targeting', errors.INVALID_NSFW_TARGET)
-            return
 
         if not target.is_collection and not is_frontpage:
             # targeted to a single subreddit, check roadblock
@@ -1368,23 +1495,50 @@ class PromoteApiController(ApiController):
         # Check inventory
         campaign = campaign if campaign_id36 else None
         if not priority.inventory_override:
-            oversold = has_oversold_error(form, campaign, start, end, bid, cpm,
+            oversold = has_oversold_error(form, campaign, start, end,
+                                          total_budget_pennies, bid_pennies,
                                           target, location)
             if oversold:
                 return
 
+        # Always set frequency_cap_default for auction campaign if frequency_cap
+        # is not set
+        if not frequency_cap and is_auction:
+            frequency_cap = g.frequency_cap_default
+
         dates = (start, end)
+
+        campaign_dict = {
+            'dates': dates,
+            'target': target,
+            'frequency_cap': frequency_cap,
+            'priority': priority,
+            'location': location,
+            'total_budget_pennies': total_budget_pennies,
+            'cost_basis': cost_basis,
+            'bid_pennies': bid_pennies,
+            'platform': platform,
+            'mobile_os': mobile_os,
+            'ios_devices': ios_devices,
+            'ios_version_range': ios_versions,
+            'android_devices': android_devices,
+            'android_version_range': android_versions,
+        }
+
         if campaign:
-            promote.edit_campaign(link, campaign, dates, bid, cpm, target,
-                                  frequency_cap[0], frequency_cap[1], priority,
-                                  location, platform, mobile_os, ios_devices,
-                                  ios_versions, android_devices, android_versions)
+            if requires_reapproval and promote.is_accepted(link):
+                campaign_dict['is_approved'] = False
+
+            promote.edit_campaign(
+                link,
+                campaign,
+                **campaign_dict
+            )
         else:
-            campaign = promote.new_campaign(link, dates, bid, cpm, target,
-                                            frequency_cap[0], frequency_cap[1],
-                                            priority, location, platform, mobile_os,
-                                            ios_devices, ios_versions, android_devices,
-                                            android_versions)
+            campaign = promote.new_campaign(
+                link,
+                **campaign_dict
+            )
         rc = RenderableCampaign.from_campaigns(link, campaign)
         jquery.update_campaign(campaign._fullname, rc.render_html())
 
@@ -1458,8 +1612,9 @@ class PromoteApiController(ApiController):
             return abort(404, 'not found')
 
         # Check inventory
-        if campaign_has_oversold_error(form, campaign):
-            return
+        if not campaign.is_auction:
+            if campaign_has_oversold_error(form, campaign):
+                return
 
         # check the campaign dates are still valid (user may have created
         # the campaign a few days ago)
@@ -1520,7 +1675,8 @@ class PromoteApiController(ApiController):
 
                 promote.successful_payment(link, campaign, request.ip, address)
 
-                jquery.payment_redirect(promote.promo_edit_url(link), new_payment, campaign.bid)
+                jquery.payment_redirect(promote.promo_edit_url(link),
+                        new_payment, campaign.total_budget_pennies)
                 return
             else:
                 _handle_failed_payment(reason)

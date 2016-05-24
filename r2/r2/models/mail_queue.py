@@ -316,6 +316,7 @@ class Email(object):
                 "USER_FRAUD",
                 "MESSAGE_NOTIFICATION",
                 "ADS_ALERT",
+                "EDITED_LIVE_PROMO",
                 )
 
     # Do not remove anything from this dictionary!  See above comment.
@@ -327,13 +328,14 @@ class Email(object):
         Kind.OPTIN  : _("[reddit] email addition notice"),
         Kind.RESET_PASSWORD : _("[reddit] reset your password"),
         Kind.VERIFY_EMAIL : _("[reddit] verify your email address"),
-        Kind.BID_PROMO : _("[reddit] your bid has been accepted"),
+        Kind.BID_PROMO : _("[reddit] your budget has been accepted"),
         Kind.ACCEPT_PROMO : _("[reddit] your promotion has been accepted"),
         Kind.REJECT_PROMO : _("[reddit] your promotion has been rejected"),
         Kind.QUEUED_PROMO : _("[reddit] your promotion has been charged"),
         Kind.LIVE_PROMO   : _("[reddit] your promotion is now live"),
         Kind.FINISHED_PROMO : _("[reddit] your promotion has finished"),
         Kind.NEW_PROMO : _("[reddit] your promotion has been created"),
+        Kind.EDITED_LIVE_PROMO : _("[reddit] your promotion edit is being approved"),
         Kind.NERDMAIL : _("[reddit] hey, nerd!"),
         Kind.GOLDMAIL : _("[reddit] reddit gold activation link"),
         Kind.PASSWORD_CHANGE : _("[reddit] your password has been changed"),

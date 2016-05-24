@@ -62,6 +62,9 @@ def make_map(config):
     mc('/robots.txt', controller='robots', action='robots')
     mc('/crossdomain', controller='robots', action='crossdomain')
 
+    mc('/sitemap', controller='sitemap', action='index')
+    mc('/subreddit_sitemap', controller='sitemap', action='subreddits')
+
     mc('/login', controller='forms', action='login')
     mc('/register', controller='forms', action='register')
     mc('/logout', controller='forms', action='logout')
@@ -69,6 +72,18 @@ def make_map(config):
     mc('/adminon', controller='forms', action='adminon')
     mc('/adminoff', controller='forms', action='adminoff')
     mc('/submit', controller='front', action='submit')
+
+    # redirect old urls to the new
+    ABOUT_BASE = "https://about.reddit.com/"
+    mc('/about', controller='redirect', action='redirect', dest=ABOUT_BASE, 
+       conditions={'function':not_in_sr})
+    mc('/about/values', controller='redirect', action='redirect', dest=ABOUT_BASE)
+    mc('/about/team', controller='redirect', action='redirect',
+       dest=ABOUT_BASE)
+    mc('/about/alien', controller='redirect', action='redirect',
+       dest=ABOUT_BASE + "press")
+    mc('/jobs', controller='redirect', action='redirect',
+       dest=ABOUT_BASE + "careers")
 
     mc('/over18', controller='post', action='over18')
     mc('/quarantine', controller='post', action='quarantine')
@@ -129,7 +144,7 @@ def make_map(config):
        dest='/contact')
     mc('/contact', controller='front', action='contact_us')
     mc('/jobs', controller='redirect', action='redirect',
-       dest='https://jobs.lever.co/reddit')
+       dest='https://boards.greenhouse.io/reddit')
 
     mc('/admin/awards', controller='awards')
     mc('/admin/awards/:awardcn/:action', controller='awards',
@@ -244,8 +259,9 @@ def make_map(config):
     # sponsor listings
     mc('/sponsor/promoted/:sort', controller='sponsorlisting', action='listing',
        requirements=dict(sort="future_promos|pending_promos|unpaid_promos|"
-                              "rejected_promos|live_promos|underdelivered|"
-                              "reported|house|fraud|all"))
+                              "rejected_promos|live_promos|edited_live_promos|"
+                              "underdelivered|reported|house|fraud|all|"
+                              "unapproved_campaigns|by_platform"))
     mc('/sponsor', controller='sponsorlisting', action="listing",
        sort="all")
     mc('/sponsor/promoted/', controller='sponsorlisting', action="listing",
@@ -257,7 +273,8 @@ def make_map(config):
     # listings of user's promos
     mc('/promoted/:sort', controller='promotelisting', action="listing",
        requirements=dict(sort="future_promos|pending_promos|unpaid_promos|"
-                              "rejected_promos|live_promos|all"))
+                              "rejected_promos|live_promos|edited_live_promos|"
+                              "all"))
     mc('/promoted/', controller='promotelisting', action="listing", sort="all")
 
     # editing endpoints
@@ -383,6 +400,7 @@ def make_map(config):
     mc('/api/gadget/click/:ids', controller='api', action='gadget',
        type='click')
     mc('/api/gadget/:type', controller='api', action='gadget')
+    mc('/api/zendeskreply', controller='mailgunwebhook', action='zendeskreply')
     mc('/api/:action', controller='promoteapi',
        requirements=dict(action=("promote|unpromote|edit_promo|ad_s3_callback|"
                                  "ad_s3_params|freebie|promote_note|update_pay|"

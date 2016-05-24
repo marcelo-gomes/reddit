@@ -319,7 +319,7 @@ def send_gift(buyer, recipient, months, days, signed, giftmessage,
 
     message += '\n\n' + strings.gold_benefits_msg
     if g.lounge_reddit:
-        message += '\n* ' + strings.lounge_msg
+        message += '\n\n' + strings.lounge_msg
     message = append_random_bottlecap_phrase(message)
 
     if not signed:
@@ -596,7 +596,7 @@ class IpnController(RedditController):
                         "pays for 5 instance hours of reddit's servers.")
             message += "\n\n" + strings.gold_benefits_msg
             if g.lounge_reddit:
-                message += "\n* " + strings.lounge_msg
+                message += "\n\n" + strings.lounge_msg
         elif payment_blob['goldtype'] == 'autorenew':
             admintools.adjust_gold_expiration(buyer, days=days)
             subject, message = subscr_pm(pennies, months, new_subscr=True)
@@ -847,8 +847,8 @@ class GoldPaymentController(RedditController):
             return
 
         gold_recipient = recipient or buyer
-        with gold_lock(gold_recipient):
-            gold_recipient._sync_latest()
+        with gold_recipient.get_read_modify_write_lock() as lock:
+            gold_recipient.update_from_cache(lock)
 
             secret_pieces = [goldtype]
             if goldtype == 'gift':
@@ -1344,10 +1344,6 @@ def validate_blob(custom):
     return ret
 
 
-def gold_lock(user):
-    return g.make_lock('gold_purchase', 'gold_%s' % user._id)
-
-
 def days_from_months(months):
     if months >= 12:
         assert months % 12 == 0
@@ -1392,8 +1388,8 @@ def reverse_gold_purchase(transaction_id):
         recipient = Account._by_name(recipient_name)
 
     gold_recipient = recipient or buyer
-    with gold_lock(gold_recipient):
-        gold_recipient._sync_latest()
+    with gold_recipient.get_read_modify_write_lock() as lock:
+        gold_recipient.update_from_cache(lock)
 
         if goldtype in ('onetime', 'autorenew'):
             subtract_gold_days(buyer, days)

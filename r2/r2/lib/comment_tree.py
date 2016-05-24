@@ -29,60 +29,32 @@ from pylons import app_globals as g
 from r2.lib.cache import sgm
 from r2.lib.utils import tup
 from r2.models.comment_tree import CommentTree, InconsistentCommentTreeError
-from r2.models.link import Comment, Link
+from r2.models.link import Comment, Link, CommentScoresByLink
 
 MESSAGE_TREE_SIZE_LIMIT = 15000
 
 
 def add_comments(comments):
-    links = Link._byID([com.link_id for com in tup(comments)], data=True)
-    comments = tup(comments)
+    """Add comments to the CommentTree and update scores."""
+    from r2.models.builder import write_comment_orders
 
-    link_map = {}
-    for com in comments:
-        link_map.setdefault(com.link_id, []).append(com)
-
-    for link_id, coms in link_map.iteritems():
-        link = links[link_id]
-        add_comments = [comment for comment in coms if not comment._deleted]
-        delete_comments = (comment for comment in coms if comment._deleted)
-        timer = g.stats.get_timer('comment_tree.add.%s'
-                                  % link.comment_tree_version)
-        timer.start()
-        try:
-            with CommentTree.mutation_context(link, timeout=30):
-                timer.intermediate('lock')
-                comment_tree = CommentTree.by_link(link, timer)
-                timer.intermediate('get')
-                if add_comments:
-                    comment_tree.add_comments(add_comments)
-                for comment in delete_comments:
-                    comment_tree.delete_comment(comment, link)
-                timer.intermediate('update')
-        except InconsistentCommentTreeError:
-            comment_ids = [comment._id for comment in coms]
-            g.log.exception(
-                'add_comments_nolock failed for link %s %s, recomputing',
-                link_id, comment_ids)
-            rebuild_comment_tree(link, timer=timer)
-            g.stats.simple_event('comment_tree_inconsistent')
-
-        timer.stop()
-        update_comment_votes(coms)
-
-
-def update_comment_votes(comments):
-    from r2.models import CommentScoresByLink
+    link_ids = [comment.link_id for comment in tup(comments)]
+    links = Link._byID(link_ids, data=True)
 
     comments = tup(comments)
-
     comments_by_link_id = defaultdict(list)
     for comment in comments:
         comments_by_link_id[comment.link_id].append(comment)
-    links_by_id = Link._byID(comments_by_link_id.keys(), data=True)
 
     for link_id, link_comments in comments_by_link_id.iteritems():
-        link = links_by_id[link_id]
+        link = links[link_id]
+
+        timer = g.stats.get_timer(
+            'comment_tree.add.%s' % link.comment_tree_version)
+        timer.start()
+
+        # write scores before CommentTree because the scores must exist for all
+        # comments in the tree
         for sort in ("_controversy", "_confidence", "_score"):
             scores_by_comment = {
                 comment._id36: getattr(comment, sort)
@@ -92,6 +64,31 @@ def update_comment_votes(comments):
 
         scores_by_comment = _get_qa_comment_scores(link, link_comments)
         CommentScoresByLink.set_scores(link, "_qa", scores_by_comment)
+        timer.intermediate('scores')
+
+        with CommentTree.mutation_context(link, timeout=180):
+            try:
+                timer.intermediate('lock')
+                comment_tree = CommentTree.by_link(link, timer)
+                timer.intermediate('get')
+                comment_tree.add_comments(link_comments)
+                timer.intermediate('update')
+            except InconsistentCommentTreeError:
+                # failed to add a comment to the CommentTree because its parent
+                # is missing from the tree. this comment will be lost forever
+                # unless a rebuild is performed.
+                comment_ids = [comment._id for comment in link_comments]
+                g.log.error(
+                    "comment_tree_inconsistent: %s %s" % (link, comment_ids))
+                g.stats.simple_event('comment_tree_inconsistent')
+                return
+
+            # do this under the same lock because we want to ensure we are using
+            # the same version of the CommentTree as was just written
+            write_comment_orders(link)
+            timer.intermediate('write_order')
+
+        timer.stop()
 
 
 def _get_qa_comment_scores(link, comments):
@@ -168,15 +165,12 @@ def get_comment_scores(link, sort, comment_ids, timer):
 
         scores_needed = set(comment_ids) - set(scores_by_id.keys())
         if scores_needed:
+            # some scores were missing from CommentScoresByLink--lookup the
+            # comments and calculate the scores.
             g.stats.simple_event('comment_tree_bad_sorter')
 
             missing_comments = Comment._byID(
                 scores_needed, data=True, return_dict=False)
-
-            # queue the missing comments to be added to the comments tree, which
-            # will trigger adding their scores
-            for comment in missing_comments:
-                queries.add_to_commentstree_q(comment)
 
             if sort == "_qa":
                 scores_by_missing_id36 = _get_qa_comment_scores(
@@ -187,27 +181,32 @@ def get_comment_scores(link, sort, comment_ids, timer):
                     for id36, score in scores_by_missing_id36.iteritems()
                 }
             else:
-                scores_by_missing = {
-                    comment._id: getattr(comment, sort)
+                scores_by_missing_id36 = {
+                    comment._id36: getattr(comment, sort)
                     for comment in missing_comments
                 }
+
+                scores_by_missing = {
+                    int(id36, 36): score
+                    for id36, score in scores_by_missing_id36.iteritems()
+                }
+
+            # up to once per minute write the scores to limit writes but
+            # eventually return us to the correct state.
+            if not g.disallow_db_writes:
+                write_key = "lock:score_{link}{sort}".format(
+                    link=link._id36,
+                    sort=sort,
+                )
+                should_write = g.lock_cache.add(write_key, "", time=60)
+                if should_write:
+                    CommentScoresByLink.set_scores(
+                        link, sort, scores_by_missing_id36)
 
             scores_by_id.update(scores_by_missing)
             timer.intermediate('sort')
 
     return scores_by_id
-
-
-def rebuild_comment_tree(link, timer):
-    with CommentTree.mutation_context(link, timeout=180):
-        timer.intermediate('lock')
-        comment_tree = CommentTree.rebuild(link)
-        timer.intermediate('rebuild')
-        # the tree rebuild updated the link's comment count, so schedule it for
-        # search reindexing
-        link.update_search_index()
-        timer.intermediate('update_search_index')
-        return comment_tree
 
 
 # message conversation functions
@@ -394,8 +393,6 @@ def compute_message_trees(messages):
     messages = sorted(messages, key = lambda m: m._date, reverse = True)
 
     for m in messages:
-        if not m._loaded:
-            m._load()
         mdict[m._id] = m
         if m.first_message:
             roots.add(m.first_message)
@@ -443,4 +440,4 @@ def _populate(after_id = None, estimate=54301242):
 
     for chunk in utils.in_chunks(q, chunk_size):
         chunk = filter(lambda x: hasattr(x, 'link_id'), chunk)
-        update_comment_votes(chunk)
+        add_comments(chunk)

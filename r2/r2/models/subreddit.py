@@ -37,12 +37,14 @@ from pylons import request
 from pylons import tmpl_context as c
 from pylons import app_globals as g
 from pylons.i18n import _, N_
+from thrift.protocol.TProtocol import TProtocolException
+from thrift.Thrift import TApplicationException
+from thrift.transport.TTransport import TTransportException
 
 from r2.config import feature
 from r2.lib.db.thing import Thing, Relation, NotFound
 from account import (
     Account,
-    AccountsActiveBySR,
     FakeAccount,
     QuarantinedSubredditOptInsByAccount,
 )
@@ -55,7 +57,6 @@ from r2.lib.memoize import memoize
 from r2.lib.permissions import ModeratorPermissionSet
 from r2.lib.utils import (
     UrlParser,
-    fuzz_activity,
     in_chunks,
     summarize_markdown,
     timeago,
@@ -213,6 +214,8 @@ class SubredditExists(Exception): pass
 
 
 class Subreddit(Thing, Printable, BaseSite):
+    _cache = g.thingcache
+
     # Note: As of 2010/03/18, nothing actually overrides the static_path
     # attribute, even on a cname. So c.site.static_path should always be
     # the same as g.static_path.
@@ -348,6 +351,10 @@ class Subreddit(Thing, Printable, BaseSite):
     )
 
     MAX_STICKIES = 2
+
+    @classmethod
+    def _cache_prefix(cls):
+        return "sr:"
 
     def __setattr__(self, attr, val, make_dirty=True):
         if attr in self._derived_attrs:
@@ -584,13 +591,6 @@ class Subreddit(Thing, Printable, BaseSite):
         return self.subscriber_ids()
 
     @property
-    def accounts_active(self):
-        if self.hide_num_users_info:
-            return 0
-
-        return self.get_accounts_active()[0]
-
-    @property
     def wiki_use_subreddit_karma(self):
         return True
 
@@ -652,21 +652,57 @@ class Subreddit(Thing, Printable, BaseSite):
         else:
             multi.delete()
 
-    def get_accounts_active(self):
-        fuzzed = False
-        count = AccountsActiveBySR.get_count(self)
-        key = 'get_accounts_active-' + self._id36
+    activity_contexts = (
+        "logged_in",
+    )
+    SubredditActivity = collections.namedtuple(
+        "SubredditActivity", activity_contexts)
 
-        # Fuzz counts having low values, for privacy reasons
-        if count < 100 and not c.user_is_admin:
-            fuzzed = True
-            cached_count = g.cache.get(key)
-            if not cached_count:
-                count = fuzz_activity(count)
-                g.cache.set(key, count, time=5*60)
-            else:
-                count = cached_count
-        return count, fuzzed
+    def record_visitor_activity(self, context, visitor_id):
+        """Record a visit to this subreddit in the activity service.
+
+        This is used to show "here now" numbers. Multiple contexts allow us
+        to bucket different kinds of visitors (logged-in vs. logged-out etc.)
+
+        :param str context: The category of visitor. Must be one of
+            Subreddit.activity_contexts.
+        :param str visitor_id: A unique identifier for this visitor within the
+            given context.
+
+        """
+        assert context in self.activity_contexts
+
+        # we don't actually support other contexts yet
+        assert self.activity_contexts == ("logged_in",)
+
+        if not c.activity_service:
+            return
+
+        try:
+            c.activity_service.record_activity(self._fullname, visitor_id)
+        except (TApplicationException, TProtocolException, TTransportException):
+            pass
+
+    def count_activity(self):
+        """Count activity in this subreddit in all known contexts.
+
+        :returns: a named tuple of activity information for each context.
+
+        """
+        # we don't actually support other contexts yet
+        assert self.activity_contexts == ("logged_in",)
+
+        if not c.activity_service:
+            return None
+
+        try:
+            # TODO: support batch lookup of multiple contexts (requires changes
+            # to activity service)
+            with c.activity_service.retrying(attempts=4, budget=0.1) as svc:
+                activity = svc.count_activity(self._fullname)
+            return self.SubredditActivity(activity)
+        except (TApplicationException, TProtocolException, TTransportException):
+            return None
 
     def spammy(self):
         return self._spam
@@ -1191,12 +1227,15 @@ class Subreddit(Thing, Printable, BaseSite):
     def get_all_mod_ids(srs):
         from r2.lib.db.thing import Merge
         srs = tup(srs)
-        queries = [SRMember._query(SRMember.c._thing1_id == sr._id,
-                                   SRMember.c._name == 'moderator') for sr in srs]
+        queries = [
+            SRMember._simple_query(
+                ["_thing2_id"],
+                SRMember.c._thing1_id == sr._id,
+                SRMember.c._name == 'moderator',
+            ) for sr in srs
+        ]
+
         merged = Merge(queries)
-        # sr_ids = [sr._id for sr in srs]
-        # query = SRMember._query(SRMember.c._thing1_id == sr_ids, ...)
-        # is really slow
         return [rel._thing2_id for rel in list(merged)]
 
     def update_moderator_permissions(self, user, **kwargs):
@@ -1252,7 +1291,7 @@ class Subreddit(Thing, Printable, BaseSite):
     @classmethod
     def get_promote_srid(cls):
         try:
-            return cls._by_name(g.promo_sr_name)._id
+            return cls._by_name(g.promo_sr_name, stale=True)._id
         except NotFound:
             return None
 
@@ -1399,11 +1438,11 @@ class SubscribedSubredditsByAccount(tdb_cassandra.DenormalizedRelation):
     @classmethod
     def get_all_sr_ids(cls, user):
         key = cls.__name__ + user._id36
-        sr_ids = g.thing_cache.get(key)
+        sr_ids = g.cassandra_local_cache.get(key)
         if sr_ids is None:
             r = cls._cf.xget(user._id36)
             sr_ids = [int(sr_id36, 36) for sr_id36, val in r]
-            g.thing_cache.set(key, sr_ids)
+            g.cassandra_local_cache.set(key, sr_ids)
 
         return sr_ids
 
@@ -1883,8 +1922,7 @@ class MultiReddit(FakeSubreddit):
         # Get moderator SRMember relations for all in srs
         # if a relation doesn't exist there will be a None entry in the
         # returned dict
-        mod_rels = SRMember._fast_query(self.srs, user,
-                                        'moderator', data=False)
+        mod_rels = SRMember._fast_query(self.srs, user, 'moderator', data=True)
         if None in mod_rels.values():
             return False
         else:

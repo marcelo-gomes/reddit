@@ -83,6 +83,7 @@ python-pycaptcha
 python-pylibmc=1.2.2-1~trusty5
 python-amqplib
 python-bcrypt
+python-snappy
 python-snudown
 python-l2cs
 python-lxml
@@ -92,6 +93,7 @@ python-tinycss2
 python-unidecode
 python-mock
 python-yaml
+python-httpagentparser
 
 python-baseplate
 
@@ -109,4 +111,11 @@ optipng
 jpegoptim
 
 libpcre3-dev
+
+python-gevent
+python-gevent-websocket
+python-haigha
+
+python-redis
+python-pyramid
 PACKAGES
