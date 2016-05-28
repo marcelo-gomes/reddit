@@ -131,7 +131,7 @@ The MVC structure in this project is inherited by Pylons, which is a web develop
 
 ####**Database**
 
-![Logical View Diagram](./diagrams/ThinDB.png)
+![Logical View Diagram](./diagrams/ThingDB.png)
 
 The reddit database is built on two different systems, with two different objectives. 
 Cassandra is used to store pre-computed information, like the order of the posts and attributes in the front page. These are complex objects that are stored temporarily. Cassandra behaves as a cache which is accessed by the http server generating the web page immediately, as the user asks, minimizing the amount of queries that the other databases receive. 
@@ -177,6 +177,7 @@ After the Up/Downvote is on the queue, it will be fetched by the consumer that w
 
 
 #**Development view**
+![Process View Diagram](./diagrams/Development_view.png)
 
 
 
