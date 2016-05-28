@@ -191,7 +191,7 @@ After the Up/Downvote is on the queue, it will be fetched by the consumer that w
 
 
 #**Scenarios
-
+![Process View Diagram](./diagrams/use_Case.png)
 
 
 
