@@ -169,6 +169,9 @@ After the Up/Downvote is on the queue, it will be fetched by the consumer that w
 #Development view
 
 ![Development View Diagram](./diagrams/Development_view.png)
+In terms of design, reddit can be described as r2 and System Config. System config stands as the startup configs and handles the queue consumers. For example all reddit-consumer files handle something related to the different queues.</br>
+The structure of r2 is equals to the structure of pylons.
+There are some files inside model as account.py or automoderator.py among other that shouldnt be in model, but in controlers folder.</br>
 
 #Physical view
 
