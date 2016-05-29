@@ -27,7 +27,7 @@ Table of Contents
 #**A Brief Overview**
 ===================
 
-[Reddit](https://reddit.com) is a social news and link aggregrator website where users, or ***Redditors***, post links from the Internet, as well as  their original content. <br/>
+[Reddit](https://reddit.com) is a social news and link aggregrator website where users post links from the Internet, as well as  their original content. <br/>
 It was launched in June 23rd, 2005, and as of the begining of 2016, it has a few billion monthly page views.<br/>
 The backend is mostly built in Python, with a PostgreSQL database, and several side technologies added over time, as the website needed to keep up with the larger and larger traffic.
 Reddit is licenced under CPAL.
@@ -95,13 +95,10 @@ Amazon SimpleDB and Amazon Simple Queue Service (Amazon SQS), to provide a compl
  - **It is reliable:**
 	* Amazon EC2 guarantees 99.95% availability, and is widely used in industry. It eases some of the vendor lock-in fears.
 
-<<<<<<< HEAD
-
 =======
 **System Requirements**
 ===================
 Reddit can be run on any Linux distribution (with sufficient setup work thrown at it). It can be trivially setup on Ubuntu with an [install script](https://github.com/reddit/reddit/wiki/reddit-install-script-for-Ubuntu).
->>>>>>> fdd15651491cbc116c224b642d41ec2d07762b91
 
 #**4+1 Architectural Views**
 
