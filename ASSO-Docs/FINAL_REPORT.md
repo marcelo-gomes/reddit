@@ -137,18 +137,19 @@ However the trade-off when looking from a practical perspective is that the data
 
 ####Subtitle
 U - User<br/>
-H - HTTP server<br/>
+H - HTTP Server<br/>
 M - Memcached<br/>
-C - Cassandra Database<br/>
-P - Postgres Database  <br/>
-Q - RabitMQ<br/>
-Co- Consumer
+C - Cassandra<br/>
+P - PostgresSQL<br/>
+Q - RabbitMQ<br/>
+Co - One of the various python script that acts as queue consumer
 
 ####Post
-![Process View Diagram](./diagrams/process_view_1_post.png)
+![Process View Diagram](./diagrams/process_view_create_post.png)
 
-When someone wants to insert a post on Reddit, the first step is to send an HTTP POST to the HTTP server. On a second step, the server will check Memcached to see if there already is information present, using a GET through a unix or a TCP socketand it will also check on Cassandra, using a SELECT instead. Then, the server hits the Postgres with several queries, getting the result from the database in the form of a Remote Procedure call. <br/>
-The final step of this procedure consists on the HTTP server sending the response to the the user.
+When creating a post, a HTTP POST is sent to the HTTP server. The new post is created and submitted to both memcached (via memcached's ASCII protocol) and to Postgres on an existing database connection.<br/>
+Because we created a post and the post belongs to some subreddit, the post listing fort he subreddit has to be updated. A new job is put on the queue that will eventually update the listing. Note how this is done asynchronously.<br/>
+If the queue is being processed very slowly, the user would not be able to see his own post in the list.
 
 ####Comment
 ![Process View Diagram](./diagrams/process_view_2_comment.png)
