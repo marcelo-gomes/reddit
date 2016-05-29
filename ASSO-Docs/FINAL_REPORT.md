@@ -96,17 +96,17 @@ Reddit can be run on any Linux distribution (with sufficient setup work thrown a
 #Logical View
 
 ####Activity Diagram
-![Logical View Diagram](./diagrams/logical_view_1.png)
+![Logical View Diagram](./diagrams/logical_view_activity_diagram.png)
 
 The base architecture for reddit is fairly simple. A user agent (which can be a browser with a human behind, or a standalone program) connects to the server via HTTP and does GET for some given webpage, or a POST. Depending of the action and the contents of the GET/POST, the HTTP server grabs data from the Postgres data or one of the various caching mechanisms (memcached, Cassandra) before a webpage is built and sent via HTTP RES.
 Some actions don't necessarily need an immediate server response to the user, and can be processed asynchronously in the architecture. Such actions are queued up on RabbitMQ (which is just an AMPQ implementation) to be consumed by python scripts.
 Various trade-offs and architectural choices are well visible here. A lot is done with the goal of mitigating load on the PostgreSQL. Memcached is first consulted for any queries done, which adds a layer of indirection for all data fetches. This ultimately spares PostgresSQL of constantly fetching commonly used data.
 Furthermore, expensive computed results are cached in Cassandra, in a semi-permanent basis, which spares further query load on each user request. In fact, all the queue jobs do is update these expensive computed results.
-The name of the game is caching, and the user thee who can wait for updated content.
+The name of the game is caching, and the user is thee who can wait for updated content.
 
 ####HTTP Server Expansion
 
-![Logical View Diagram](./diagrams/logical_view_2.png)
+![Logical View Diagram](./diagrams/logical_view_activity_diagram_http_server.png)
 
 The HTTP server's structure resembles Model-view-controller. In the configuration, url paths are associated with Controllers. When a user does a HTTP GET or POST, the Controller is instanciated and called. The Controller accesses the Model for data fetches or updates, without being able to directly touch the database or the various caching mechanisms.
 Depending on the request, the Model can behave differently on choosing the database to use when the information isn't already present in the model. When there is an update on the data, the model can store it on the database using the code present on the ThingDB.<br/>
@@ -115,7 +115,7 @@ The MVC structure in this project is inherited by Pylons, which is a web develop
 
 ####Database
 
-![ThingDB Diagram](./diagrams/ThingDB.png)
+![ThingDB Diagram](./diagrams/logical_view_thingdb.png)
 
 The reddit database is built on two different systems, with two different objectives. <br/>
 Cassandra is used to store pre-computed information, like the order of the posts and attributes in the front page. These are complex objects that are stored temporarily. Cassandra behaves as a cache which is accessed by the http server generating the web page immediately, as the user asks, minimizing the amount of queries that the other databases receive. <br/>
@@ -127,7 +127,7 @@ There are benefits and detriments to this implementation, the main benefits are 
 The bad part of this implementation comes from the part that, to select a "thing"  from the database, reddit may be needed to access several tables that can be on different computers. A relational system can be more efficient in terms of time.
 
 ####**Class Diagram**
-![Logical View Diagram](./diagrams/logical_view_3.png)
+![Logical View Diagram](./diagrams/logical_view_class_diagram.png)
 
 Classes used to store data and the database structure design are tightly connected. "Thing" has all of the attributes that will be stored in the Thing tables described previously. Derived classes have all their attributes stored in the Data tables.
 Let's reflect for a moment on the consequences of having derived class attributes be stored on the Data tables. Because the Data tables behave as a key-value store, if during development an extra attribute has to be added during to a class, it can be done at runtime without modifying the database structure. During data fetches, if a given attribute is not found, we can plant in a default. That gives this design wonderful flexibility.
@@ -142,7 +142,7 @@ M - Memcached<br/>
 C - Cassandra<br/>
 P - PostgresSQL<br/>
 Q - RabbitMQ<br/>
-Co - One of the various python script that acts as queue consumer
+Co - One of the various python scripts that acts as queue consumer
 
 ####Post
 ![Process View Diagram](./diagrams/process_view_create_post.png)
@@ -152,7 +152,7 @@ Because we created a post and the post belongs to some subreddit, the post listi
 If the queue is being processed very slowly, the user would not be able to see his own post in the list.
 
 ####Comment
-![Process View Diagram](./diagrams/process_view_2_comment.png)
+![Process View Diagram](./diagrams/process_view_create_comment.png)
 
 The process of creating a comment on Reddit starts from sending an HTTP POST to the HTTP server. The comment is then inserted on Memcached and on Postgres and an OK response is sent to the user. This marks the end of the user's interaction with Reddit.<br/>
 Even though the user receives an OK response, he will not see his comment on the right spot of the page (inserted in a tree).  The process of reordering the comment tree is done in "back-end". <br/>
@@ -160,22 +160,19 @@ After sending the response to the user, the server adds the comment to a queue w
 After sorting the comment tree, the consumer will add it to Cassandra and Memcached.
 
 ####Upvote/Downvote
-![Process View Diagram](./diagrams/process_view_3_updown.png)
+![Process View Diagram](./diagrams/process_view_upvote_downvote.png)
 
 When a user upvotes or downvotes a "thing", the same mechanisms are called. First of all, an HTTP post is sent to the HTTP server. Then, Memcached increments the information displayed on the page instantly and the Up/Downvote is sent to the queue to recompute the information and proceed to sorting the information on the page if needed. At this point the user receives the response from the server. <br/>
 After the Up/Downvote is on the queue, it will be fetched by the consumer that will hit the Postgres database with queries in order to retrieve information and to insert the updated information into Cassandra.
 
-
 #Development view
 
-![Development View Diagram](./diagrams/Development_view.png)
-In terms of design, reddit can be described as r2 and System Config. System config stands as the startup configs and handles the queue consumers. For example all reddit-consumer files handle something related to the different queues.</br>
-The structure of r2 is equals to the structure of pylons.
-There are some files inside model as account.py or automoderator.py among other that shouldnt be in model, but in controlers folder.</br>
+![Development View Diagram](./diagrams/development_view_package_diagram.png)
+The package structure is inherited from the web framework, Pylons. Although the structure seems sane, the content guidelines are often violated, with code in Controllers that should belong to Lib, or Model code that should be in a specific Controller.<br/>
 
 #Physical view
 
-![Process View Diagram](./diagrams/physical_view.png)
+![Process View Diagram](./diagrams/physical_view_deployment_diagram.png)
 To allow multiplexing of the HTTP servers to take place, a load balancer (specifically, HaProxy) is placed before HTTP servers.<br/>
 HaProxy also allows us to distinguish between traffic intended for different services, which is useful for serving media and static content on a standalone development machine. <br/>
 This can be done since HaProxy is a layer 4 load balancer, meaning it can look into the HTTP headers and decide where a request goes.
@@ -185,7 +182,7 @@ However, in the asynchronous part of the architecture, for queue jobs, a lot of 
 As this is undesirable for the main databases, a replica set that is mirrored periodically is used. Of course, a trade-off here is that the queue jobs might occasionally work on outdated data. This is mostly mitigated by Memcached, which has a cache time-out larger than the replication period, and thus is likely to have recent data for which the replica databases are outdated.<br/>
 Cassandra can scale to any number of machines if need-be, due to the ring cluster architecture it uses. Cassandra instances are assigned a token that determines their slot in the ring. The key used on data fetches maps to a region in the ring. Since Cassandra only stores computed data, there's no concern for data replication, which simplifies scaling up/down the number of machines.
 
-![Process View Diagram](./diagrams/postgres.png)
+![Process View Diagram](./diagrams/physical_view_deployment_diagram_postgres.png)
 Due to architectural decisions mentioned earlier, the Postgres database can be split into 2 separate databases, that can be run on separate machines. This is particularly effective since often in data fetches, only data from one of the databases is needed at a time.<br/>
 One of the databases stores "Thing" tables. All "Thing" tables use the same columns (thing_id, upvotes, downvotes, deleted, spam, date). The other database stores attributes belonging to each "Thing", resembling a key-value store.<br/>
 For example, an account is a "Thing" with attributes such as "password", "name", "email". The attribute name serves as key in the key-value store.
@@ -194,7 +191,7 @@ For example, an account is a "Thing" with attributes such as "password", "name",
 
 
 #Scenarios
-![Scenarios Diagram](./diagrams/use_Case.png)
+![Scenarios Diagram](./diagrams/scenarios.png)
 
 
 
