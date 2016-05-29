@@ -44,6 +44,8 @@ PostgreSQL is an advanced object-relational database management system that supp
  
  - Memcached: For caching and ad-hoc locking/synchronization between architectural components. Almost everything on reddit depends on memcached running properly.
 
+ - McRouter: Used to seamlessly cluster memcached instances.
+
  - RabbitMQ: An implementation of AMQP, used to store jobs for offline processing.
 
 
