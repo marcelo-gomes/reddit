@@ -4,7 +4,7 @@
 
 Group Elements
 ==================
- - José Soares
+ - José Soares (https://github.com/zemiguel15)
  - Marcelo Gomes (https://github.com/marcelo-gomes)
  - Maria Costa (https://github.com/MariaBacelar)
  - Pedro Cabral	(https://github.com/up201003803)
