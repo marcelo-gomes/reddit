@@ -1,4 +1,4 @@
-# **Reddit**: The front page of the internet
+# Reddit: The front page of the internet
 
 
 
@@ -27,11 +27,6 @@ Table of Contents
 It was launched in June 23rd, 2005, and as of the begining of 2016, it has a few billion monthly page views.<br/>
 The backend is mostly built in Python, with a PostgreSQL database, and several side technologies added over time, as the website needed to keep up with the larger and larger traffic.
 Reddit is licenced under CPAL.
-
-----------
-#System requirements
-The system requires a server-grade machine running a linux distributuion (of the users choise) and amd64.
-
 
 ----------
 Its main technological components include:
@@ -100,14 +95,6 @@ Reddit can be run on any Linux distribution (with sufficient setup work thrown a
 
 #**Logical View**
 
-###**Package Diagram**
-![Logical View Diagram](./diagrams/logical_view_4_package.png)
-
-
-####**Class Diagram**
-![Logical View Diagram](./diagrams/logical_view_3.png)
-
-
 ####**Activity Diagram**
 ![Logical View Diagram](./diagrams/logical_view_1.png)
 
@@ -134,7 +121,12 @@ The main reason databases are implemented in this way is because on reddit almos
 There are benefits and detriments to this implementation, the main benefits are not only the fact that, if you change one field, you don't have to change the whole database, but also, the "default value" set for the objects with no value that keep the database with no repeated information and doesn't force to set a value manually. The most important benefit is the fact that with these two separated tables with no relations between them, reddit can have its database system on different machines, decentralizing and making the system scalable.<br/>
 The bad part of this implementation comes from the part that, to select a "thing"  from the database, reddit may be needed to access several tables that can be on different computers. A relational system can be more efficient in terms of time.
 
+###**Package Diagram**
+![Logical View Diagram](./diagrams/logical_view_4_package.png)
 
+
+####**Class Diagram**
+![Logical View Diagram](./diagrams/logical_view_3.png)
 
 #**Process View**
 
