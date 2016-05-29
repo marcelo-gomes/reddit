@@ -178,11 +178,13 @@ After the Up/Downvote is on the queue, it will be fetched by the consumer that w
 #Development view
 
 ![Development View Diagram](./diagrams/development_view_package_diagram.png)<br/>
+
 The package structure is inherited from the web framework, Pylons. Although the structure seems sane, the content guidelines are often violated, with code in Controllers that should belong to Lib, or Model code that should be in a specific Controller.
 
 #Physical view
 
 ![Process View Diagram](./diagrams/physical_view_deployment_diagram.png)
+
 To allow multiplexing of the HTTP servers to take place, a load balancer (specifically, HaProxy) is placed before HTTP servers.<br/>
 HaProxy also allows us to distinguish between traffic intended for different services, which is useful for serving media and static content on a standalone development machine. <br/>
 This can be done since HaProxy is a layer 4 load balancer, meaning it can look into the HTTP headers and decide where a request goes.
@@ -193,6 +195,7 @@ As this is undesirable for the main databases, a replica set that is mirrored pe
 Cassandra can scale to any number of machines if need-be, due to the ring cluster architecture it uses. Cassandra instances are assigned a token that determines their slot in the ring. The key used on data fetches maps to a region in the ring. Since Cassandra only stores computed data, there's no concern for data replication, which simplifies scaling up/down the number of machines.
 
 ![Process View Diagram](./diagrams/physical_view_deployment_diagram_postgres.png)<br/>
+
 Due to architectural decisions mentioned earlier, the Postgres database can be split into 2 separate databases, that can be run on separate machines. This is particularly effective since often in data fetches, only data from one of the databases is needed at a time.<br/>
 One of the databases stores "Thing" tables. All "Thing" tables use the same columns (thing_id, upvotes, downvotes, deleted, spam, date). The other database stores attributes belonging to each "Thing", resembling a key-value store.<p>
 For example, an account is a "Thing" with attributes such as "password", "name", "email". The attribute name serves as key in the key-value store.
