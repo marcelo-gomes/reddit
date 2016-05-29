@@ -1,21 +1,18 @@
-# **Reddit** <img src="./images/deadpool.png" alt="Deadpool" float="left" width ="70" /> <img src="./images/GOT.png" alt="Deadpool" float="left" width ="70" />
-
+# **Reddit**: The front page of the internet
 
 
 
 Group Elements
 ==================
-
  - José Soares
- - Marcelo Gomes
- - Maria Costa
- - Pedro Cabral
- - Ricardo Leite
-
+ - Marcelo Gomes (https://github.com/marcelo-gomes)
+ - Maria Costa (https://github.com/MariaBacelar)
+ - Pedro Cabral	(https://github.com/up201003803)
+ - Ricardo Leite (https://github.com/Nespa32)
 
 Table of Contents
 ==================
-* [A Brief Overview](#a-brief-overview)
+* [Introduction](#introduction)
 * [4+1 Architectural Views](#41-architectural-views)
   * [Logical View](#logical-view)
   * [Process View](#process-view)
@@ -24,32 +21,31 @@ Table of Contents
   * [Scenarios](#scenarios)
 
 
-#**A Brief Overview**
+#Introduction
 ===================
-
 [Reddit](https://reddit.com) is a social news and link aggregrator website where users post links from the Internet, as well as  their original content. <br/>
 It was launched in June 23rd, 2005, and as of the begining of 2016, it has a few billion monthly page views.<br/>
 The backend is mostly built in Python, with a PostgreSQL database, and several side technologies added over time, as the website needed to keep up with the larger and larger traffic.
 Reddit is licenced under CPAL.
 
 ----------
-####**System requirements:**
- The system requires a server-grade machine running a linux distributuion (of the users choise) and amd64.
+#System requirements
+The system requires a server-grade machine running a linux distributuion (of the users choise) and amd64.
 
 
 ----------
-Its main technological components, by subjective order of importance, include:
+Its main technological components include:
 
- - Python: With a ton of extra libraries. A noteworthy library would be Pylons.
+ - Python: high-level, general-purpose, interpreted, dynamic programming language.
 
- -  Pylons: A web framework.
+ -  Pylons: A web framework for Python.
 
- -  PostgreSQL: Primary backend database. It is used for storing data on Accounts, Subreddits, Links, Comments, Votes, etc. 
+ -  PostgreSQL: Primary backend database. Used to store all permanent data, including accounts, posts, comments.
 PostgreSQL is an advanced object-relational database management system that supports an extended subset of the SQL standard, including transactions, foreign keys, subqueries, triggers, user-defined types and functions. It has native programming interfaces for C/C++, Java, .Net, Perl, Python, Ruby, Tcl, ODBC, among others.
 
- - HAProxy: Essentially an HTTP load balancer, suited for very high traffic web sites. In fact, it powers quite a number of the world's most visited ones.
+ - HAProxy: A TCP/HTTP load balancer, suited for very high traffic web sites.
  
- - Cassandra: Secondary database system, used for caching (NoSQL, key-value store).
+ - Cassandra: Secondary database system, used for caching computed values (NoSQL, key-value store).
  
  - Memcached: For caching and ad-hoc locking/synchronization between architectural components. Almost everything on reddit depends on memcached running properly.
 
@@ -58,18 +54,18 @@ PostgreSQL is an advanced object-relational database management system that supp
 
 ----------
 
-####**Functional requirements:**
+####Functional requirements
 
-Reddit has to be able to serve a social news and link aggregator website, where users can submit content, and comment on other user's content.<br/>
-Users are able to 'upvote' and 'downvote' submissions and user comments, and user comments for a given submission are presented in a orderable tree-style. Submissions belong to a given area, called 'subreddit'. Users can subscribe to subreddits. <br/>
-Reddit presents a 'front page' for a given user depending of their subreddit subscriptions, and whether they are a (registered) user at all. This page has recent submissions ordered according to score.
+- Reddit has to be able to serve a social news and link aggregator website, where users can submit content, and comment on other user's content.<br/>
+- Users are able to 'upvote' and 'downvote' submissions and user comments, and user comments for a given submission are presented in a orderable tree-style. Submissions belong to a given area, called 'subreddit'. Users can subscribe to subreddits. <br/>
+- Reddit presents a 'front page' for a given user depending of their subreddit subscriptions, and whether they are a (registered) user at all. This page has recent submissions ordered according to score.
 
-####**Non functional requirements:**
+####Non-functional requirements
 
-- Response Time - Need to ensure a fast response so the  browsing is fluid even with big throughput or data volumes.
-- Avaliability - The Downtime of the website must be minimized, having the service running as long as possible, keeping it avaliable to the user.
-- Scalability - Need to ensure that even with an overload of the website service will continue to run ensuring acceptable QoS.
-- Authentication/Security - Must allow the identification of users who try to access his account , while protecting the system from possible invaders.
+- Response Time - Need to ensure a fast response so the browsing is fluid even with big throughput or data volumes.
+- Avaliability - website downtime has to be minimal, having the service running as long as possible, keeping it avaliable to geographically disperse users.
+- Scalability - reddit has to able to scale as necessary to handle traffic surges, as well as ever-increasing traffic demands. All of this with acceptable QoS.
+- Authentication/Security - Must allow the identification of users who try to access his account, while protecting the system from possible invaders.
 - Usability - QoS affects the user's interaction with the website and his satisfaction with it , and the QoS will have to ensure that the user wants to re-use it so usability must be a point to take in count.
 
 
