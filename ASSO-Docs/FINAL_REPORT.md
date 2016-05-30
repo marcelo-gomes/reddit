@@ -4,7 +4,7 @@
 
 Group Elements
 ==================
- - José Soares
+ - José Soares (https://github.com/zemiguel15)
  - Marcelo Gomes (https://github.com/marcelo-gomes)
  - Maria Costa (https://github.com/MariaBacelar)
  - Pedro Cabral	(https://github.com/up201003803)
@@ -44,6 +44,8 @@ PostgreSQL is an advanced object-relational database management system that supp
  
  - Memcached: For caching and ad-hoc locking/synchronization between architectural components. Almost everything on reddit depends on memcached running properly.
 
+ - McRouter: Used to seamlessly cluster memcached instances.
+
  - RabbitMQ: An implementation of AMQP, used to store jobs for offline processing.
 
 
@@ -68,29 +70,6 @@ PostgreSQL is an advanced object-relational database management system that supp
 - Authentication/Security - Must allow the identification of users who try to access his account, while protecting the system from possible invaders.
 
 - Usability - QoS affects the user's interaction with the website and his satisfaction with it , and the QoS will have to ensure that the user wants to re-use it so usability must be a point to take in count.
-
-
-----------
-
-Reddit is primarily deployed on AWS, along with S3 storage for static objects.
-
-Amazon Elastic Compute Cloud (Amazon EC2) is a web service [AWS] that provides resizable compute capacity in the cloud. <br/>
-It was designed to facilitate cloud computing on the web scale for developers. The service interface simple Amazon EC2 Web makes it possible to obtain and configure capacity, with minimal friction.
-
-###*Why AWS?*
-
- - **Scales up or down as needed:**
-	 * AWS allows launching and destroying 'instances' on the run, with little wait time before the new 'hardware' is acquired. This is useful for websites that have spikes of traffic, as one can simply keep launching instances to meet the load requirements.
-	 
- - **Instance management can be done via API:**
-	* Meaning instance launch/destruction lifecycle can be done without having a sysadmin watching 24/7. Utilities such as instance reboot and reset are also provided, which eases up administration and allows 'cleaning up' as needed.
-
- - **It can be used with other Amazon services:**
-	* It works in conjunction with Amazon Simple Storage Service (Amazon S3), Amazon Relational Database Service (Amazon RDS), 
-Amazon SimpleDB and Amazon Simple Queue Service (Amazon SQS), to provide a complete solution for computing, processing consultation and storage of a wide variety of applications.
-
- - **It is reliable:**
-	* Amazon EC2 guarantees 99.95% availability, and is widely used in industry. It eases some of the vendor lock-in fears.
 
 =======
 System Requirements
@@ -176,11 +155,13 @@ After the Up/Downvote is on the queue, it will be fetched by the consumer that w
 #Development view
 
 ![Development View Diagram](./diagrams/development_view_package_diagram.png)<br/>
+
 The package structure is inherited from the web framework, Pylons. Although the structure seems sane, the content guidelines are often violated, with code in Controllers that should belong to Lib, or Model code that should be in a specific Controller.
 
 #Physical view
 
 ![Process View Diagram](./diagrams/physical_view_deployment_diagram.png)
+
 To allow multiplexing of the HTTP servers to take place, a load balancer (specifically, HaProxy) is placed before HTTP servers.<br/>
 HaProxy also allows us to distinguish between traffic intended for different services, which is useful for serving media and static content on a standalone development machine. <br/>
 This can be done since HaProxy is a layer 4 load balancer, meaning it can look into the HTTP headers and decide where a request goes.
@@ -191,6 +172,7 @@ As this is undesirable for the main databases, a replica set that is mirrored pe
 Cassandra can scale to any number of machines if need-be, due to the ring cluster architecture it uses. Cassandra instances are assigned a token that determines their slot in the ring. The key used on data fetches maps to a region in the ring. Since Cassandra only stores computed data, there's no concern for data replication, which simplifies scaling up/down the number of machines.
 
 ![Process View Diagram](./diagrams/physical_view_deployment_diagram_postgres.png)<br/>
+
 Due to architectural decisions mentioned earlier, the Postgres database can be split into 2 separate databases, that can be run on separate machines. This is particularly effective since often in data fetches, only data from one of the databases is needed at a time.<br/>
 One of the databases stores "Thing" tables. All "Thing" tables use the same columns (thing_id, upvotes, downvotes, deleted, spam, date). The other database stores attributes belonging to each "Thing", resembling a key-value store.<p>
 For example, an account is a "Thing" with attributes such as "password", "name", "email". The attribute name serves as key in the key-value store.
