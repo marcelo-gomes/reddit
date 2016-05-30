@@ -1,4 +1,5 @@
-# Reddit: The front page of the internet
+# Reddit: The front page of the internet <img src="./images/deadpool.png" alt="Deadpool" float="left" width ="70" /> <img src="./images/GOT.png" alt="Deadpool" float="left" width ="70" />
+
 
 
 
